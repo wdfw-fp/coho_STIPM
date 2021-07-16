@@ -1,6 +1,6 @@
 ---
 title: "stipm"
-author: "dan.auerbach@dfw.wa.gov modifying DeFilippo et al. 2021"
+author: "dan.auerbach@dfw.wa.gov modifying DeFilippo et al. 2021 in consultation with Thomas.Buehrens@dfw.wa.gov"
 date: "`r Sys.Date()`"
 editor_options: 
   chunk_output_type: console
@@ -19,13 +19,14 @@ The general concept here is to assess "production readiness" of the [public code
 knitr::opts_chunk$set(echo = TRUE, results = FALSE, warning = FALSE, message = FALSE)
 
 library("tidyverse")
+library("rstan")
+options(mc.cores = 10) #12 on DA machine
+rstan_options(auto_write = TRUE)
 
 f_orig <- "Coho_IPM_spatial_AR.r"
 ```
 
 ## Helpers
-
-Various, easily dealt with.
 
 # get data
 
@@ -42,7 +43,6 @@ name_file='coho_names_3.csv'
 This function is called once to declare a list object, which is then passed as the first argument to a wrapper for a stan fitting execution `exec_fun()`. However, considerable wrangling precedes the call to `stan()` when the `mod_fit` object is declared. The passed data are an anonymous list created from the various intermediates in `exec_fun()`-scope (those are dealt with below in "fit stan", mostly as inline calls). 
 
 The following chunks deconstruct and reconstruct towards a single piped flow to match the `coho_dat_full` object returned from `dat_func()`, which then appears to form the basis for subsequent analysis. 
-
 ## coho_file
 
 ```{r orig_coho_dat}
@@ -127,47 +127,47 @@ coho_dat_2 <- coho_dat[,c(1,6,14,15,22,23,24)]
 ```
 
 ```{r tbl_coho}
-drop_pop <- c("Queets", "Clearwater", 'Bell Creek', 'Johnson Creek', 'Jimmy Come Lately Creek',
-              'Deep Creek', 'McDonald Creek', 'Siebert Creek', 'Salt Creek', 'Discovery Bay',
-              'East Twin Creek', 'West Twin Creek', 'Northeast Hood Canal')
-
-tbl_coho <- readr::read_csv(coho_file) |> #1709x21
-  mutate(
-    pop = case_when(
-      !is.na(`SaSI Population`) ~ `SaSI Population`, #orig 2nd
-      #!is.na(`SaSI Population`) & !is.na(SubPopulation) ~ `SaSI Population`, #orig 4th, but not needed: Subpop state does not matter if assigning SaSIpop whenever SaSIpop present
-      is.na(`SaSI Population`) & is.na(SubPopulation) ~ `Managment Unit (FRAM)`, #orig 1st
-      is.na(`SaSI Population`) & !is.na(SubPopulation) ~ SubPopulation #orig 3rd
-    )
-    ,
-    spwn = case_when(
-      !is.na(`SaSI Population`) ~ `SASI Natural Origin Abundance`, #orig 2nd
-      is.na(`SaSI Population`) & is.na(SubPopulation) ~ `Age 3 Escapement (FRAM)`, #orig 1st
-      is.na(`SaSI Population`) & !is.na(SubPopulation) ~ `SupPopulation Escapement` #orig 3rd
-    ),
-    spwn = if_else(pop=="Discovery Bay", `SASI CompositeOrigin Abundance`, abs(spwn)) #corrects negative val for 2005 A12A Wild, orig L152
-    ,
-    #backconversion of ER to harvest
-    #note that original colnames distinguish `# FRAM` and `(% FRAM)` by only a "." (yikes!)
-    #same as hvst = spwn * (`Harvest (% FRAM)`^-1 - 1)^1
-    # = s * ([h+s]/h - 1)^-1 = s * (1 - s/h - 1)^-1 = s * (s/h)^-1 = h
-    #however:
-    # - FRAM ER to SaSI?
-    # - nonlinearity at low/high ER?
-    hvst = spwn / (1/`Harvest (% FRAM)` - 1) 
-  ) |> 
-  filter( !(pop %in% drop_pop) ) |> 
-  select(`Calendar Year`, `Smolt Abundance`, Latitude, Longitude, pop, spwn, hvst)
-
-identical(as.character(coho_dat$Population), tbl_coho$pop)
-#identical(coho_dat$Spawners, tbl_coho$spwn) #coercion of negative val creates decimal dust diff b/c hard coded assignment in orig
-identical(round(coho_dat$Spawners,3), round(tbl_coho$spwn,3))
-# #unintentionally, by coercing the negative spawner value AFTER the harvest val is calc'd, masks the negative spawner canceling out the 103% ER (that produced the negative escapement in the first place)
-# #when spawners are abs() earlier, the harvest backcalculation goes negative...
-# #exclude the select() above to see...
-identical(round(coho_dat$Harvest,3), round(tbl_coho$hvst,3))
-# coho_dat[which(round(coho_dat$Harvest,3) != round(tbl_coho$hvst,3)), c("Harvest....FRAM.", "Harvest", "Spawners")]
-# tbl_coho[which(round(coho_dat$Harvest,3) != round(tbl_coho$hvst,3)), c("Harvest (% FRAM)", "hvst","spwn")] |> as.data.frame()
+# drop_pop <- c("Queets", "Clearwater", 'Bell Creek', 'Johnson Creek', 'Jimmy Come Lately Creek',
+#               'Deep Creek', 'McDonald Creek', 'Siebert Creek', 'Salt Creek', 'Discovery Bay',
+#               'East Twin Creek', 'West Twin Creek', 'Northeast Hood Canal')
+# 
+# tbl_coho <- readr::read_csv(coho_file) |> #1709x21
+#   mutate(
+#     pop = case_when(
+#       !is.na(`SaSI Population`) ~ `SaSI Population`, #orig 2nd
+#       #!is.na(`SaSI Population`) & !is.na(SubPopulation) ~ `SaSI Population`, #orig 4th, but not needed: Subpop state does not matter if assigning SaSIpop whenever SaSIpop present
+#       is.na(`SaSI Population`) & is.na(SubPopulation) ~ `Managment Unit (FRAM)`, #orig 1st
+#       is.na(`SaSI Population`) & !is.na(SubPopulation) ~ SubPopulation #orig 3rd
+#     )
+#     ,
+#     spwn = case_when(
+#       !is.na(`SaSI Population`) ~ `SASI Natural Origin Abundance`, #orig 2nd
+#       is.na(`SaSI Population`) & is.na(SubPopulation) ~ `Age 3 Escapement (FRAM)`, #orig 1st
+#       is.na(`SaSI Population`) & !is.na(SubPopulation) ~ `SupPopulation Escapement` #orig 3rd
+#     ),
+#     spwn = if_else(pop=="Discovery Bay", `SASI CompositeOrigin Abundance`, abs(spwn)) #corrects negative val for 2005 A12A Wild, orig L152
+#     ,
+#     #backconversion of ER to harvest
+#     #note that original colnames distinguish `# FRAM` and `(% FRAM)` by only a "." (yikes!)
+#     #same as hvst = spwn * (`Harvest (% FRAM)`^-1 - 1)^1
+#     # = s * ([h+s]/h - 1)^-1 = s * (1 - s/h - 1)^-1 = s * (s/h)^-1 = h
+#     #however:
+#     # - FRAM ER to SaSI?
+#     # - nonlinearity at low/high ER?
+#     hvst = spwn / (1/`Harvest (% FRAM)` - 1) 
+#   ) |> 
+#   filter( !(pop %in% drop_pop) ) |> 
+#   select(`Calendar Year`, `Smolt Abundance`, Latitude, Longitude, pop, spwn, hvst)
+# 
+# identical(as.character(coho_dat$Population), tbl_coho$pop)
+# #identical(coho_dat$Spawners, tbl_coho$spwn) #coercion of negative val creates decimal dust diff b/c hard coded assignment in orig
+# identical(round(coho_dat$Spawners,3), round(tbl_coho$spwn,3))
+# # #unintentionally, by coercing the negative spawner value AFTER the harvest val is calc'd, masks the negative spawner canceling out the 103% ER (that produced the negative escapement in the first place)
+# # #when spawners are abs() earlier, the harvest backcalculation goes negative...
+# # #exclude the select() above to see...
+# identical(round(coho_dat$Harvest,3), round(tbl_coho$hvst,3))
+# # coho_dat[which(round(coho_dat$Harvest,3) != round(tbl_coho$hvst,3)), c("Harvest....FRAM.", "Harvest", "Spawners")]
+# # tbl_coho[which(round(coho_dat$Harvest,3) != round(tbl_coho$hvst,3)), c("Harvest (% FRAM)", "hvst","spwn")] |> as.data.frame()
 
 ```
 
@@ -192,27 +192,27 @@ coho_dat_2 <- droplevels(coho_dat_2)
 ```
 
 ```{r tbl_coho_stream}
-tbl_coho <- inner_join(
-  tbl_coho
-  ,
-  readr::read_csv(stream_file) |> 
-    filter(Population != "", !is.na(Population)) |> #no NAs in the current csv, but left for now
-    select(pop = Population, KM)
-  ,
-  by = "pop"
-)
-
-#merge() sorts, *_join() family do not...
-identical(
-  coho_dat_2 |> arrange(Population, Calendar.Year) |> select(Population) |> unlist() |> as.character()
-  ,
-  tbl_coho |> arrange(pop, `Calendar Year`) |> select(pop) |> unlist() |> as.character()
-)
-identical(
-  coho_dat_2 |> arrange(Population, Calendar.Year) |> select(Spawners) |> unlist() |> as.numeric() |> round(3)
-  ,
-  tbl_coho |> arrange(pop, `Calendar Year`) |> select(spwn) |> unlist() |>as.numeric() |> round(3)
-)
+# tbl_coho <- inner_join(
+#   tbl_coho
+#   ,
+#   readr::read_csv(stream_file) |> 
+#     filter(Population != "", !is.na(Population)) |> #no NAs in the current csv, but left for now
+#     select(pop = Population, KM)
+#   ,
+#   by = "pop"
+# )
+# 
+# #merge() sorts, *_join() family do not...
+# identical(
+#   coho_dat_2 |> arrange(Population, Calendar.Year) |> select(Population) |> unlist() |> as.character()
+#   ,
+#   tbl_coho |> arrange(pop, `Calendar Year`) |> select(pop) |> unlist() |> as.character()
+# )
+# identical(
+#   coho_dat_2 |> arrange(Population, Calendar.Year) |> select(Spawners) |> unlist() |> as.numeric() |> round(3)
+#   ,
+#   tbl_coho |> arrange(pop, `Calendar Year`) |> select(spwn) |> unlist() |>as.numeric() |> round(3)
+# )
 
 ```
 
@@ -272,50 +272,50 @@ coho_dat_full <- droplevels(coho_dat_full)
 ```
 
 ```{r tbl_coho_stream_cwt}
-drop_cwt_surv <- c("Minter Crk H", "Baker H", "Satsop H")
-
-#Preserving assignment choices in original...
-tbl_coho <- full_join(
-  tbl_coho
-  ,
-  readr::read_csv(cwt_file) |> 
-    mutate(
-      hat = if_else(stringr::str_detect(`Smolt Ocean Survival Population`, " H$"), 1, 0)
-    ) |> #count(hat) #matches
-    #count(`Managment Unit (FRAM)`, `Smolt Ocean Survival Population`)
-    filter( !(`Smolt Ocean Survival Population` %in% drop_cwt_surv)) |> 
-    select(pop = `Managment Unit (FRAM)`, `Calendar Year`, `Smolt Ocean Survival Population`, Fishery_Plus_Escapement, Release_No, hat)
-  ,
-  by = c("pop", "Calendar Year")
-)
-
-identical(
-  coho_dat_full |> arrange(Population, Calendar.Year) |> select(Population) |> unlist() |> as.character()
-  ,
-  tbl_coho |> arrange(pop, `Calendar Year`) |> select(pop) |> unlist() |> as.character()
-)
-identical(
-  coho_dat_full |> arrange(Population, Calendar.Year) |> select(Spawners) |> unlist() |> as.numeric() |> round(3)
-  ,
-  tbl_coho |> arrange(pop, `Calendar Year`) |> select(spwn) |> unlist() |>as.numeric() |> round(3)
-)
-
-## what are these data?
-# tibble(year = 1973:2015) |> 
-#   left_join(
-#     readr::read_csv(cwt_file) |> filter(`Smolt Ocean Survival Population` == "Willapa H") # |> print(n=50)
-#     , by = c("year" = "Calendar Year")) |> 
-#   ggplot(aes(year, `Smolt Ocean Survival Rate`)) + geom_col() + labs(title = "Willapa H from CWT_FRAM_Matches_complete20200303.csv")
-
-# ## presumably this expanding join was intentional?
-# left_join(
-#   coho_dat_full |> count(Population),
-#   coho_dat_2 |> count(Population),
-#   by = "Population", suffix = c("full","2")
-#   ) |> 
-#   filter(nfull != n2)
-# coho_dat_full |> filter(Population == "Area 12-12B Wild")
-# coho_dat_2 |> filter(Population == "Area 12-12B Wild")
+# drop_cwt_surv <- c("Minter Crk H", "Baker H", "Satsop H")
+# 
+# #Preserving assignment choices in original...
+# tbl_coho <- full_join(
+#   tbl_coho
+#   ,
+#   readr::read_csv(cwt_file) |> 
+#     mutate(
+#       hat = if_else(stringr::str_detect(`Smolt Ocean Survival Population`, " H$"), 1, 0)
+#     ) |> #count(hat) #matches
+#     #count(`Managment Unit (FRAM)`, `Smolt Ocean Survival Population`)
+#     filter( !(`Smolt Ocean Survival Population` %in% drop_cwt_surv)) |> 
+#     select(pop = `Managment Unit (FRAM)`, `Calendar Year`, `Smolt Ocean Survival Population`, Fishery_Plus_Escapement, Release_No, hat)
+#   ,
+#   by = c("pop", "Calendar Year")
+# )
+# 
+# identical(
+#   coho_dat_full |> arrange(Population, Calendar.Year) |> select(Population) |> unlist() |> as.character()
+#   ,
+#   tbl_coho |> arrange(pop, `Calendar Year`) |> select(pop) |> unlist() |> as.character()
+# )
+# identical(
+#   coho_dat_full |> arrange(Population, Calendar.Year) |> select(Spawners) |> unlist() |> as.numeric() |> round(3)
+#   ,
+#   tbl_coho |> arrange(pop, `Calendar Year`) |> select(spwn) |> unlist() |>as.numeric() |> round(3)
+# )
+# 
+# ## what are these data?
+# # tibble(year = 1973:2015) |> 
+# #   left_join(
+# #     readr::read_csv(cwt_file) |> filter(`Smolt Ocean Survival Population` == "Willapa H") # |> print(n=50)
+# #     , by = c("year" = "Calendar Year")) |> 
+# #   ggplot(aes(year, `Smolt Ocean Survival Rate`)) + geom_col() + labs(title = "Willapa H from CWT_FRAM_Matches_complete20200303.csv")
+# 
+# # ## presumably this expanding join was intentional?
+# # left_join(
+# #   coho_dat_full |> count(Population),
+# #   coho_dat_2 |> count(Population),
+# #   by = "Population", suffix = c("full","2")
+# #   ) |> 
+# #   filter(nfull != n2)
+# # coho_dat_full |> filter(Population == "Area 12-12B Wild")
+# # coho_dat_2 |> filter(Population == "Area 12-12B Wild")
 
 ```
 
@@ -408,35 +408,35 @@ coho_dat_full <- coho_dat_full[order(coho_dat_full$pop),]
 ```
 
 ```{r tbl_coho_clean}
-tbl_coho <- tbl_coho |> 
-  filter(`Calendar Year` > 1985) |> 
-  bind_rows(
-    tibble(`Calendar Year` = 2013, yr = 28, pop = "Area 7-7A Independent Wild"),
-    tibble(`Calendar Year` = 2004, yr = 19, pop = "Port Gamble Bay Wild"),
-    tibble(`Calendar Year` = 2000:2001, yr = 15:16, pop = "Grays Harbor Miscellaneous Wild")
-  ) |>
-  left_join(
-    bind_rows(
-      tibble(pop = "Green River Wild", Long = -122.2145, Lat = 47.3519),
-      tibble(pop = "Area 10E Miscellaneous Wild", Long = -122.8242, Lat = 47.5896)
-    )
-    , by = "pop") |>
-  mutate(
-    Longitude = if_else(is.na(Long), Longitude, Long), Long = NULL,
-    Latitude = if_else(is.na(Lat), Latitude, Lat), Lat = NULL,
-    `Smolt Abundance` = if_else(pop == "Puyallup River Wild", NA_real_, `Smolt Abundance`),
-    hvst = if_else(stringr::str_detect(pop, "Quillayute River") & `Calendar Year` <= 1987, NA_real_, hvst),
-    pop_id = as.numeric(factor(pop)),
-    yr = `Calendar Year` - min(`Calendar Year`) + 1
-  ) |> 
-  arrange(pop)
-
-identical(tbl_coho$`Smolt Abundance` |> sum(na.rm = T), coho_dat_full$Smolt.Abundance |> sum(na.rm = T))
-identical(tbl_coho$spwn |> sum(na.rm = T), coho_dat_full$Spawners |> sum(na.rm = T)) #same 5th decimal numeric diff
-identical(tbl_coho$hvst |> sum(na.rm = T), coho_dat_full$Harvest |> sum(na.rm = T)) #same ER>1, negative-to-positive-escapement coercion issue 
-identical(tbl_coho$pop_id |> sum(na.rm = T), coho_dat_full$pop |> sum(na.rm = T))
-tbl_coho |> count(pop, pop_id) |> full_join(coho_dat_full |> count(Population, pop), by = c("pop" = "Population")) |> print(n=50)
-identical(tbl_coho$yr |> sum(na.rm = T), coho_dat_full$yr |> sum(na.rm = T))
+# tbl_coho <- tbl_coho |> 
+#   filter(`Calendar Year` > 1985) |> 
+#   bind_rows(
+#     tibble(`Calendar Year` = 2013, yr = 28, pop = "Area 7-7A Independent Wild"),
+#     tibble(`Calendar Year` = 2004, yr = 19, pop = "Port Gamble Bay Wild"),
+#     tibble(`Calendar Year` = 2000:2001, yr = 15:16, pop = "Grays Harbor Miscellaneous Wild")
+#   ) |>
+#   left_join(
+#     bind_rows(
+#       tibble(pop = "Green River Wild", Long = -122.2145, Lat = 47.3519),
+#       tibble(pop = "Area 10E Miscellaneous Wild", Long = -122.8242, Lat = 47.5896)
+#     )
+#     , by = "pop") |>
+#   mutate(
+#     Longitude = if_else(is.na(Long), Longitude, Long), Long = NULL,
+#     Latitude = if_else(is.na(Lat), Latitude, Lat), Lat = NULL,
+#     `Smolt Abundance` = if_else(pop == "Puyallup River Wild", NA_real_, `Smolt Abundance`),
+#     hvst = if_else(stringr::str_detect(pop, "Quillayute River") & `Calendar Year` <= 1987, NA_real_, hvst),
+#     pop_id = as.numeric(factor(pop)),
+#     yr = `Calendar Year` - min(`Calendar Year`) + 1
+#   ) |> 
+#   arrange(pop)
+# 
+# identical(tbl_coho$`Smolt Abundance` |> sum(na.rm = T), coho_dat_full$Smolt.Abundance |> sum(na.rm = T))
+# identical(tbl_coho$spwn |> sum(na.rm = T), coho_dat_full$Spawners |> sum(na.rm = T)) #same 5th decimal numeric diff
+# identical(tbl_coho$hvst |> sum(na.rm = T), coho_dat_full$Harvest |> sum(na.rm = T)) #same ER>1, negative-to-positive-escapement coercion issue 
+# identical(tbl_coho$pop_id |> sum(na.rm = T), coho_dat_full$pop |> sum(na.rm = T))
+# tbl_coho |> count(pop, pop_id) |> full_join(coho_dat_full |> count(Population, pop), by = c("pop" = "Population")) |> print(n=50)
+# identical(tbl_coho$yr |> sum(na.rm = T), coho_dat_full$yr |> sum(na.rm = T))
 
 ```
 
@@ -474,23 +474,26 @@ coho_dat_full <- droplevels(coho_dat_full)
 ```
 
 ```{r sf_coord}
-coord <- tbl_coho |> 
-  group_by(pop, pop_id) |> 
-  summarise(long = median(Longitude, na.rm = T), lat = median(Latitude, na.rm = T), .groups = "drop") |> 
-  sf::st_as_sf(coords = c("long", 'lat'), crs = sf::st_crs("+proj=longlat +datum=WGS84")) |> 
-  sf::st_transform(crs = sf::st_crs("+proj=utm +zone=10T ellps=WGS84"))
+# coord <- tbl_coho |> 
+#   group_by(pop, pop_id) |> 
+#   summarise(long = median(Longitude, na.rm = T), lat = median(Latitude, na.rm = T), .groups = "drop") |> 
+#   sf::st_as_sf(coords = c("long", 'lat'), crs = sf::st_crs("+proj=longlat +datum=WGS84")) |> 
+#   sf::st_transform(crs = sf::st_crs("+proj=utm +zone=10T ellps=WGS84"))
 
-tbl_coho <- tbl_coho |> 
-  mutate(Basin = if_else(Longitude < -123.80, 0, 1)) |> 
-  #orig has a merge(all=TRUE), but the full_join expands with 8 fully empty rows other than for col "Name"
-  #so avoiding thatwhich presumably then gets removed later?
-  left_join(
-    readr::read_csv(name_file) |> rename(pop_id = pop),
-    by = "pop_id"
-  )
+# tbl_coho <- tbl_coho |> 
+#   mutate(Basin = if_else(Longitude < -123.80, 0, 1)) |> 
+#   #orig has a merge(all=TRUE), but the full_join expands with 8 fully empty rows other than for col "Name"
+#   #so avoiding that, since presumably then gets removed later?
+#   left_join(
+#     readr::read_csv(name_file) |> rename(pop_id = pop),
+#     by = "pop_id"
+#   )
+
 ```
 
 ## Revised full ingest
+
+Note this produces an object without the 8 fully empty rows other than for col "Name" that are in original `coho_dat_full`.
 
 ```{r tbl_coho_full}
 drop_pop <- c("Queets", "Clearwater", 'Bell Creek', 'Johnson Creek', 'Jimmy Come Lately Creek',
@@ -561,137 +564,279 @@ tbl_coho <- readr::read_csv(coho_file) |> #1709x21
     by = "pop_id") |> 
   arrange(pop)
 
+sf_coord <- tbl_coho |> 
+  group_by(pop, pop_id) |> 
+  summarise(long = median(Longitude, na.rm = T), lat = median(Latitude, na.rm = T), .groups = "drop") |> 
+  sf::st_as_sf(coords = c("long", 'lat'), crs = sf::st_crs("+proj=longlat +datum=WGS84")) |> 
+  sf::st_transform(crs = sf::st_crs("+proj=utm +zone=10T ellps=WGS84"))
+
 ```
+
+Skipping recreation of `state_cast` data object of compiled prior forecasts.
 
 # fit stan
 
 Further wrangling in `exec_fun()` targets the data list to pass to `stan()`.
 
-```{r matching_this, eval=FALSE}
-list(
-      n_year <- length(unique(coho_dat_full$Calendar.Year)), 
-      n_pop <- length(unique(coho_dat_full$pop)), 
-      pop_smolt <- pop_smolt,
-      pop_esc <- pop_esc,
-      pop_catch <- pop_catch,
-      pop_MS <- pop_MS,
-      n_pop_smolt <-n_pop_smolt,
-      n_pop_esc <- n_pop_esc,
-      n_pop_catch <- n_pop_catch,
-      n_pop_MS <- n_pop_MS,
-      stream_dist = aggregate(coho_dat_full$KM, by=list('Population'=coho_dat_full$Population), mean)$x,
-      smolt_true <- smolt_true,
-      esc_true <- esc_true,
-      MS_true <- MS_true,
-      harvest_true <- harvest_true,
-      smolt_dat <- smolt_dat,
-      esc_dat <- esc_dat,
-      harvest_dat <- harvest_dat,
-      MS_dat_x <- round(MS_dat_x),
-      MS_dat_N <- round(MS_dat_N),
-      n_smolt <- length(smolt_dat),
-      n_esc <- length(esc_dat),
-      n_harvest <- length(harvest_dat),
-      n_MS <- length(MS_dat_x),
-      #sigma_catch <- sigma_catch,
-      sigma_esc <- sigma_esc,
-      #sigma_smolt <- sigma_smolt,
-      n_hatchery <- length(unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==1]))),
-      hatchery <- which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==1]))),
-      wild <- which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==0]))),
-      slice_smolt_start <- slice_smolt_start,
-      slice_smolt_end <- slice_smolt_end,
-      slice_esc_start <- slice_esc_start,
-      slice_esc_end <-  slice_esc_end,
-      slice_harvest_start <- slice_harvest_start,
-      slice_harvest_end <-  slice_harvest_end,
-      slice_MS_start <- slice_MS_start,
-      slice_MS_end <-  slice_MS_end,
-      u=matrix(1, nrow=1, ncol=n_pop),
-      dist = as.matrix(dist(coord, 'euclidean', diag=TRUE, upper=TRUE)/10000)
-      #dist = as.matrix(dist(coord[sound,]/10000, 'euclidean', diag=TRUE, upper=TRUE))
-    )
+```{r orig_pre_stan_wrangling}
+#Create vector of basin identifiers for coastal and puget sound populations
+basin <- aggregate(coho_dat_full$Basin, by=list('Population'=coho_dat_full$pop), mean, na.rm=TRUE)
+coast <- basin$Population[basin$x==0]
+sound <- basin$Population[basin$x==1]  
+
+#Compute number of populations
+n_pop <- length(unique(coho_dat_full$Population))
+
+#Compute populations with smolt data
+pop_smolt <- unique(coho_dat_full$pop[which(is.na(coho_dat_full$Smolt.Abundance)==FALSE)])
+#Compute populations with marine survival data
+pop_MS <- unique(coho_dat_full$pop[which(is.na(coho_dat_full$Release_No)==FALSE)])
+#Compute populations with harvest data
+pop_catch <- unique(coho_dat_full$pop[which(is.na(coho_dat_full$Harvest)==FALSE)])
+#Compute populations with escapement data
+pop_esc <- unique(coho_dat_full$pop[which(is.na(coho_dat_full$Spawners)==FALSE)])
+
+#Compute number of populations with each data type available
+n_pop_smolt <- length(pop_smolt)
+n_pop_MS <- length(pop_MS)
+n_pop_catch <- length(pop_catch)
+n_pop_esc <- length(pop_esc)
+
+#create vectors to store the number of years of smolt and escapement data available for each population being considered
+n_year_true_smolt <- vector(length=n_pop_smolt)
+n_year_true_esc <- vector(length=n_pop_esc)
+n_year_true_harvest <- vector(length=n_pop_catch)
+n_year_true_MS <- vector(length=n_pop_MS)
+
+#Calculate the number of years for which each data type is available for each population
+#Smolt data
+for (i in 1:n_pop_smolt){
+  n_year_true_smolt[i] <- length(na.omit(coho_dat_full$Smolt.Abundance[coho_dat_full$pop==pop_smolt[i]]))
+}
+#escapement data
+for (i in 1:n_pop_esc){
+  n_year_true_esc[i] <- length(na.omit(coho_dat_full$Spawners[coho_dat_full$pop==pop_esc[i]]))
+}
+#harvest data
+for (i in 1:n_pop_catch){
+  n_year_true_harvest[i] <- length(na.omit(coho_dat_full$Harvest[coho_dat_full$pop==pop_catch[i]]))
+}
+#marine survival data
+for (i in 1:n_pop_MS){
+  n_year_true_MS[i] <- length(na.omit(coho_dat_full$Fishery_Plus_Escapement[coho_dat_full$pop==pop_MS[i]]))
+}
+
+#Compile all the years across populations for which there is escapement and smolt data (not NAs)
+esc_true <- coho_dat_full$yr[which(is.na(coho_dat_full$Spawners)==FALSE)]
+smolt_true <- coho_dat_full$yr[which(is.na(coho_dat_full$Smolt.Abundance)==FALSE)]
+harvest_true <- coho_dat_full$yr[which(is.na(coho_dat_full$Harvest )==FALSE)]
+MS_true <- coho_dat_full$yr[which(is.na(coho_dat_full$Fishery_Plus_Escapement)==FALSE)]
+
+#Compile all the actual observations of smolt and escapement data that are not NA
+smolt_dat <- coho_dat_full$Smolt.Abundance[which(is.na(coho_dat_full$Smolt.Abundance)==FALSE)]                 
+esc_dat <- coho_dat_full$Spawners[which(is.na(coho_dat_full$Spawners)==FALSE)]  
+harvest_dat <- coho_dat_full$Harvest[which(is.na(coho_dat_full$Harvest )==FALSE)]      
+MS_dat_x <- coho_dat_full$Fishery_Plus_Escapement[which(is.na(coho_dat_full$Fishery_Plus_Escapement)==FALSE)]      
+MS_dat_N <- coho_dat_full$Release_No [which(is.na(coho_dat_full$Release_No)==FALSE)]      
+
+#Create slice points for cutting up the intact (non-NA) smolt and escapement data by population (stan does not accept ragged data structures)
+slice_smolt_start <- vector(length=n_pop_smolt)
+slice_smolt_start[1] <- 1
+slice_smolt_end <- vector(length=n_pop_smolt)
+slice_smolt_end[n_pop_smolt] <- length(smolt_true)
+
+slice_esc_start <- vector(length=n_pop_esc)
+slice_esc_start[1] <- 1
+slice_esc_end <- vector(length=n_pop_esc)
+slice_esc_end[n_pop_esc] <- length(esc_true)
+
+slice_harvest_start <- vector(length=n_pop_catch)
+slice_harvest_start[1] <- 1
+slice_harvest_end <- vector(length=n_pop_catch)
+slice_harvest_end[n_pop_catch] <- length(harvest_true)
+
+slice_MS_start <- vector(length=n_pop_MS)
+slice_MS_start[1] <- 1
+slice_MS_end <- vector(length=n_pop_MS)
+slice_MS_end[n_pop_MS] <- length(MS_true)
+
+for(p in 2:n_pop_smolt){
+  slice_smolt_start[p] <- slice_smolt_start[p-1] + length(na.omit(coho_dat_full$Smolt.Abundance[coho_dat_full$pop==pop_smolt[p-1]]))
+}
+slice_smolt_end[1:(n_pop_smolt-1)] <- slice_smolt_start[2:n_pop_smolt]-1
+
+
+for(p in 2:n_pop_esc){
+  slice_esc_start[p] <- slice_esc_start[p-1] + length(na.omit(coho_dat_full$Spawners[coho_dat_full$pop==pop_esc[p-1]]))
+}
+slice_esc_end[1:(n_pop_esc-1)] <- slice_esc_start[2:n_pop_esc]-1
+
+
+for(p in 2:n_pop_catch){
+  slice_harvest_start[p] <- slice_harvest_start[p-1] + length(na.omit(coho_dat_full$Harvest[coho_dat_full$pop==pop_catch[p-1]]))
+}
+slice_harvest_end[1:(n_pop_catch-1)] <- slice_harvest_start[2:n_pop_catch]-1
+
+
+for(p in 2:n_pop_MS){
+  slice_MS_start[p] <- slice_MS_start[p-1] + length(na.omit(coho_dat_full$Fishery_Plus_Escapement[coho_dat_full$pop==pop_MS[p-1]]))
+}
+slice_MS_end[1:(n_pop_MS-1)] <- slice_MS_start[2:n_pop_MS]-1
+
 ```
 
-```{r}
+```{r orig_stan_mod_fit}
+#dropping iter for testing but otherwise using original function default control args on L456-7
+#actual fit on L1272 uses 20K iter and 5 chains but otherwise same
+n_iter=200; n_thin=1; n_adapt=0.99; n_tree=10.25; n_chain=3
+sigma_esc = 0.2; mod_filename='LD_coho_forecast_6_2_4_fit'; cast_pop=c(1:36)
+
+#in original "coord" is an argument passed object, directly from dat_list$coord
+#here using sf revised version
+#also needed convert all within list assignments from ",-" to "=" so stan sees named list
+#and deal with 36 vs 44 pops
+mod_fit <- stan(
+  file = 'LD_coho_forecast_6_2_4.stan', 
+  data = list(
+    n_year = length(unique(coho_dat_full$Calendar.Year)),
+    n_pop = nrow(coho_space), #length(unique(coho_dat_full$pop)),
+    pop_smolt = pop_smolt,
+    pop_esc = pop_esc,
+    pop_catch = pop_catch,
+    pop_MS = pop_MS,
+    n_pop_smolt =n_pop_smolt,
+    n_pop_esc = n_pop_esc,
+    n_pop_catch = n_pop_catch,
+    n_pop_MS = n_pop_MS,
+    stream_dist = aggregate(coho_dat_full$KM, by=list('Population'=coho_dat_full$Population), mean)$x,
+    smolt_true = smolt_true,
+    esc_true = esc_true,
+    MS_true = MS_true,
+    harvest_true = harvest_true,
+    smolt_dat = smolt_dat,
+    esc_dat = esc_dat,
+    harvest_dat = harvest_dat,
+    MS_dat_x = round(MS_dat_x),
+    MS_dat_N = round(MS_dat_N),
+    n_smolt = length(smolt_dat),
+    n_esc = length(esc_dat),
+    n_harvest = length(harvest_dat),
+    n_MS = length(MS_dat_x),
+    #sigma_catch = sigma_catch,
+    sigma_esc = sigma_esc,
+    #sigma_smolt = sigma_smolt,
+    n_hatchery = length(unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==1]))),
+    hatchery = which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==1]))),
+    wild = which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==0]))),
+    slice_smolt_start = slice_smolt_start,
+    slice_smolt_end = slice_smolt_end,
+    slice_esc_start = slice_esc_start,
+    slice_esc_end =  slice_esc_end,
+    slice_harvest_start = slice_harvest_start,
+    slice_harvest_end =  slice_harvest_end,
+    slice_MS_start = slice_MS_start,
+    slice_MS_end =  slice_MS_end,
+    u=matrix(1, nrow=1, ncol=nrow(coho_space)),  #matrix(1, nrow=1, ncol=n_pop),
+    dist = as.matrix(dist(sf::st_coordinates(sf_coord), 'euclidean', diag = TRUE, upper = TRUE)/10000)
+    # dist = as.matrix(dist(coord, 'euclidean', diag=TRUE, upper=TRUE)/10000)
+    # #dist = as.matrix(dist(coord[sound,]/10000, 'euclidean', diag=TRUE, upper=TRUE))
+  ),iter = n_iter, chains = n_chain, control=list(adapt_delta=n_adapt, max_treedepth=n_tree), thin=n_thin, seed=666)
+
+#saveRDS(mod_fit, paste(mod_filename,'.rds',sep=''))
+
+```
+
+
+```{r revised_stan_data}
 #declare a few intermediates to reduce the repeated filter calls around different data elements
 tbl_coho_stan <- list(
   smolt = tbl_coho |> filter(!is.na(`Smolt Abundance`)),
   esc = tbl_coho |> filter(!is.na(spwn)),
-  catch = tbl_coho |> filter(!is.na(hvst)),
+  catch = tbl_coho |> filter(!is.na(hvst)) |>
+    #override the single bad harvest val related to neg escapement/ER>1 issue above
+    mutate(hvst = abs(hvst)),
   MS = tbl_coho |> filter(!is.na(Release_No)) #note both "Release_No" and "Fishery_Plus_Escapement" are used in orig, setting up potential divergence conflict
 )
 
-
-#unclear if the within-list "<-" declarations are intentional, opting for more locally scoped
-#would prefer better within-list naming convention, but left as-is other than reorg around data types
-list(
-  n_year = length(unique(tbl_coho$`Calendar Year`)), #orig includes NA with 1986:2018
-  n_pop = length(unique(tbl_coho$pop_id)), #orig includes 8 additional IDs for plotting 'Name' only (i.e., no data)
-  u = matrix(1, nrow = 1, ncol = length(unique(tbl_coho$pop_id))),
-  dist = units::drop_units(sf::st_distance(coord)/10000), #values are identical
-  #could also: as.matrix(dist(sf::st_coordinates(coord), 'euclidean', diag = TRUE, upper = TRUE)/10000))
-  
-  pop_smolt = unique(tbl_coho_stan$smolt$pop_id), #pop_ids with smolt data 
-  n_pop_smolt = length(unique(tbl_coho_stan$smolt$pop_id)),
-  smolt_true = tbl_coho_stan$smolt$yr,
-  smolt_dat = tbl_coho_stan$smolt$`Smolt Abundance`,
-  n_smolt = nrow(tbl_coho_stan$smolt),
-
-  pop_esc = unique(tbl_coho_stan$esc$pop_id),  # pop_ids with escapement data
-  n_pop_esc = length(unique(tbl_coho_stan$esc$pop_id)),
-  esc_true = tbl_coho_stan$esc$yr,
-  esc_dat = tbl_coho_stan$esc$spwn,
-  n_esc = nrow(tbl_coho_stan$esc),
-  
-  pop_catch = unique(tbl_coho_stan$catch$pop_id), #pop_ids with harvest data
-  n_pop_catch = length(unique(tbl_coho_stan$catch$pop_id)),
-  harvest_true = tbl_coho_stan$catch$yr,
-  harvest_dat = tbl_coho_stan$catch$hvst,
-  n_harvest = nrow(tbl_coho_stan$catch),
-
-  pop_MS = unique(tbl_coho_stan$MS$pop_id), #pop_ids with marine survival data
-  n_pop_MS = length(unique(tbl_coho_stan$MS$pop_id)),
-  MS_true = tbl_coho_stan$MS$yr, #orig uses Fishery_Plus_Escapement rather than Release_No to filter...
-  MS_dat_x = tbl_coho_stan$MS$Fishery_Plus_Escapement,
-  MS_dat_N = tbl_coho_stan$MS$Release_No,
-  n_MS = nrow(tbl_coho_stan$MS),
-  
-  stream_dist = tbl_coho |> group_by(pop) |> summarise(d = mean(KM, na.rm = T), .groups = "drop") |> select(d) |> unlist() |> as.numeric(),
-  
-  #elements called "sigma_catch" and "sigma_smolt" are commented out
-  #this is a passed arg in the orig exec_fun()
-  sigma_esc = 0.2,
-  
-  n_hatchery = filter(tbl_coho, hat == 1) |> distinct(pop_id) |> nrow(),
-  # hatchery = filter(tbl_coho_stan$MS, hat == 1) |> distinct(pop_id) |> pluck("pop_id"),
-  # ## intentional or subtle error in orig due to which() wrapping re-indexing?
-  # # hatchery <- which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==1]))),
-  # # wild <- which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==0]))),
-  # 
-  # (pop_MS <- unique(coho_dat_full$pop[which(is.na(coho_dat_full$Release_No)==FALSE)])) #L470 orig
-  # identical(pop_MS, unique(tbl_coho_stan$MS$pop_id)) #matching the set of IDs with marine survival data
-  # coho_dat_full |> filter(pop %in% pop_MS, Hatchery == 1) |> distinct(pop) #IDs of pops with hatchery flag 1 presumably the goal?
-  # coho_dat_full |> filter(!is.na(Release_No), Hatchery == 1) |> distinct(pop) #same with inline redeclare of pop_MS
-  # which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==1]))) #NOT same...returns indexes of pop_MS
-  # #was it meant to be population IDs or indices of pop_MS?
-  # pop_MS[which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==1])))] #matches pluck'd version above...
-  
-  slice_smolt_start = tbl_coho_stan$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-  slice_smolt_end = tbl_coho_stan$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
-
-  slice_esc_start = tbl_coho_stan$esc |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-  slice_esc_end = tbl_coho_stan$esc |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
-
-  slice_harvest_start = tbl_coho_stan$catch |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-  slice_harvest_end = tbl_coho_stan$catch |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
-
-  slice_MS_start = tbl_coho_stan$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-  slice_MS_end = tbl_coho_stan$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
-  
+#would prefer better within-list naming convention, but for now left as-is other than reorg around data types
+stipm_fit <- stan(
+  file = 'LD_coho_forecast_6_2_4.stan', 
+  iter = 200,
+  chains = 3,
+  control = list(
+    adapt_delta = 0.99,
+    max_treedepth = 10.25
+    ),
+  thin = 1,
+  seed = 666,
+  data = list(
+    n_year = length(unique(tbl_coho$`Calendar Year`)), #orig includes NA with 1986:2018
+    n_pop = length(unique(tbl_coho$pop_id)), #orig includes 8 additional IDs for plotting 'Name' only (i.e., no data)
+    u = matrix(1, nrow = 1, ncol = length(unique(tbl_coho$pop_id))),
+    dist = units::drop_units(sf::st_distance(sf_coord)/10000), #values are identical
+    #could also: as.matrix(dist(sf::st_coordinates(coord), 'euclidean', diag = TRUE, upper = TRUE)/10000)
+    
+    pop_smolt = unique(tbl_coho_stan$smolt$pop_id), #pop_ids with smolt data 
+    n_pop_smolt = length(unique(tbl_coho_stan$smolt$pop_id)),
+    smolt_true = tbl_coho_stan$smolt$yr,
+    smolt_dat = tbl_coho_stan$smolt$`Smolt Abundance`,
+    n_smolt = nrow(tbl_coho_stan$smolt),
+    
+    pop_esc = unique(tbl_coho_stan$esc$pop_id),  # pop_ids with escapement data
+    n_pop_esc = length(unique(tbl_coho_stan$esc$pop_id)),
+    esc_true = tbl_coho_stan$esc$yr,
+    esc_dat = tbl_coho_stan$esc$spwn,
+    n_esc = nrow(tbl_coho_stan$esc),
+    
+    pop_catch = unique(tbl_coho_stan$catch$pop_id), #pop_ids with harvest data
+    n_pop_catch = length(unique(tbl_coho_stan$catch$pop_id)),
+    harvest_true = tbl_coho_stan$catch$yr,
+    harvest_dat = tbl_coho_stan$catch$hvst,
+    n_harvest = nrow(tbl_coho_stan$catch),
+    
+    pop_MS = unique(tbl_coho_stan$MS$pop_id), #pop_ids with marine survival data
+    n_pop_MS = length(unique(tbl_coho_stan$MS$pop_id)),
+    MS_true = tbl_coho_stan$MS$yr, #orig uses Fishery_Plus_Escapement rather than Release_No to filter...
+    MS_dat_x = tbl_coho_stan$MS$Fishery_Plus_Escapement |> round(), #stan expects integer...
+    MS_dat_N = tbl_coho_stan$MS$Release_No,
+    n_MS = nrow(tbl_coho_stan$MS),
+    
+    stream_dist = tbl_coho |> group_by(pop) |> summarise(d = mean(KM, na.rm = T), .groups = "drop") |> select(d) |> unlist() |> as.numeric(),
+    
+    #elements called "sigma_catch" and "sigma_smolt" are commented out
+    #this is a passed arg in the orig exec_fun()
+    sigma_esc = 0.2,
+    
+    n_hatchery = filter(tbl_coho, hat == 1) |> distinct(pop_id) |> nrow(),
+    # hatchery = filter(tbl_coho_stan$MS, hat == 1) |> distinct(pop_id) |> pluck("pop_id"),
+    # ## intentional or subtle error in orig due to which() wrapping re-indexing?
+    ## NOTE LEAVING AS-IS ORIG PENDING CLARIFICATION
+    hatchery = which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==1]))),
+    wild = which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==0]))),
+    ### 
+    # (pop_MS <- unique(coho_dat_full$pop[which(is.na(coho_dat_full$Release_No)==FALSE)])) #L470 orig
+    # identical(pop_MS, unique(tbl_coho_stan$MS$pop_id)) #matching the set of IDs with marine survival data
+    # coho_dat_full |> filter(pop %in% pop_MS, Hatchery == 1) |> distinct(pop) #IDs of pops with hatchery flag 1 presumably the goal?
+    # coho_dat_full |> filter(!is.na(Release_No), Hatchery == 1) |> distinct(pop) #same with inline redeclare of pop_MS
+    # which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==1]))) #NOT same...returns indexes of pop_MS
+    # #was it meant to be population IDs or indices of pop_MS?
+    # pop_MS[which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==1])))] #matches pluck'd version above...
+    
+    slice_smolt_start = tbl_coho_stan$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+    slice_smolt_end = tbl_coho_stan$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+    
+    slice_esc_start = tbl_coho_stan$esc |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+    slice_esc_end = tbl_coho_stan$esc |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+    
+    slice_harvest_start = tbl_coho_stan$catch |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+    slice_harvest_end = tbl_coho_stan$catch |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+    
+    slice_MS_start = tbl_coho_stan$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+    slice_MS_end = tbl_coho_stan$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
   )
-
+)
 ```
+
 
 # predict forward
 
