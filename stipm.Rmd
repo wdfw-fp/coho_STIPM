@@ -559,6 +559,8 @@ tbl_coho <- readr::read_csv(coho_file) |> #1709x21
     pop_id = as.numeric(factor(pop)),
     yr = `Calendar Year` - min(`Calendar Year`) + 1
   ) |> 
+#this is wrong but inconsequential; will not use 'Name' field
+#appears that perhaps most final name LU "coho_names_3_2.csv" did not make it to repo
   left_join(
     readr::read_csv(name_file) |> rename(pop_id = pop),
     by = "pop_id") |> 
@@ -570,11 +572,19 @@ sf_coord <- tbl_coho |>
   sf::st_as_sf(coords = c("long", 'lat'), crs = sf::st_crs("+proj=longlat +datum=WGS84")) |> 
   sf::st_transform(crs = sf::st_crs("+proj=utm +zone=10T ellps=WGS84"))
 
+# #"Name" lookup is wrong...? Not sure if/whether/how this propagated into tables/figures/conclusions...?
+# #hoping this is just due to older names file (missing "_2" shown in dat_func args of orig)
+# tibble(coho_dat_full) |> count(pop, Population, Name) |> print(n=100)
+# tbl_coho |> count(pop_id, pop, Name) |> print(n=100)
+# coho_names
+
 ```
 
 Skipping recreation of `state_cast` data object of compiled prior forecasts.
 
 # fit stan
+
+## original STIPM
 
 Further wrangling in `exec_fun()` targets the data list to pass to `stan()`.
 
@@ -746,6 +756,7 @@ mod_fit <- stan(
 
 ```
 
+## revised STIPM
 
 ```{r revised_stan_data}
 #declare a few intermediates to reduce the repeated filter calls around different data elements
@@ -755,11 +766,19 @@ tbl_coho_stan <- list(
   catch = tbl_coho |> filter(!is.na(hvst)) |>
     #override the single bad harvest val related to neg escapement/ER>1 issue above
     mutate(hvst = abs(hvst)),
-  MS = tbl_coho |> filter(!is.na(Release_No)) #note both "Release_No" and "Fishery_Plus_Escapement" are used in orig, setting up potential divergence conflict
+  MS = tbl_coho |> filter(!is.na(Release_No)), #note both "Release_No" and "Fishery_Plus_Escapement" are used in orig, setting up potential divergence conflict
+  rtrn = tbl_coho |> 
+    mutate(
+      hvst = abs(hvst), #same fix as catch
+      rtrn = spwn + hvst
+      ) |>
+    filter(!is.na(rtrn))
 )
+```
 
+```{r revised_stan_fit}
 #would prefer better within-list naming convention, but for now left as-is other than reorg around data types
-stipm_fit <- stan(
+fit_stipm <- stan(
   file = 'LD_coho_forecast_6_2_4.stan', 
   iter = 200,
   chains = 3,
@@ -835,6 +854,65 @@ stipm_fit <- stan(
     slice_MS_end = tbl_coho_stan$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
   )
 )
+```
+
+## revised AR1
+
+```{r}
+# #	only a few population-years missing estimates
+# tbl_coho_stan$rtrn |> count(pop_id) |> print(n=50)
+  
+#why is n_year "+1" here?
+#"_tot" refers to "total return"
+# a "n_year_true_tot" gets declared but not passed and not expected by AR stan
+fit_ar1 <- stan(
+  file = 'LD_coho_forecast_AR_ind_2.stan',
+  iter = 200,
+  chains = 3,
+  control = list(
+    adapt_delta = 0.99,
+    max_treedepth = 10.25
+  ),
+  thin = 1,
+  seed = 666,
+  data = list(
+    #Number of years (total, includes several missing years for some stocks)
+    n_year = length(unique(tbl_coho$`Calendar Year`)) + 1,
+    #Number of total populations    
+    n_pop = length(unique(tbl_coho$pop_id)),
+    #Number of populations with return data
+    n_pop_tot = length(unique(tbl_coho_stan$rtrn$pop_id)),
+    #Which populations possess return data
+    pop_tot = unique(tbl_coho_stan$rtrn$pop_id),
+    #Length of the return data vectors
+    n_tot = nrow(tbl_coho_stan$rtrn), #length(tot_dat)
+    #Vectors of all return data across all populations
+    tot_dat = tbl_coho_stan$rtrn$rtrn,
+    #Vectors of the indices identifying which years are those with non-NA data for the return data
+    tot_true = tbl_coho_stan$rtrn$yr,
+    #Paired vectors of slice points indicating the beginning, and end of the data for a particular population
+    slice_tot_start = tbl_coho_stan$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+    slice_tot_end = tbl_coho_stan$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
+    )
+  )
+```
+
+```{r}
+#beginning to examine stan fit objects
+#seem really unwieldy, could use some improvement
+#but more or less following orig for now
+fit_ar1_df <- as.data.frame(fit_ar1) |> tibble()
+grep(pattern = "adult_pred", colnames(fit_ar1_df), value = T)
+#the rows are posterior draws?
+fit_ar1_df[, "adult_pred[36]"]
+
+fit_ar1_df |> 
+  select(contains("adult_pred")) |> 
+  pivot_longer(names_to = "adult_pred_pop", values_to = "pred", cols = everything()) |> 
+  group_by(adult_pred_pop) |> 
+  summarise(across(pred, list(median = median)), .groups = "drop") |> print(n=50)
+  
+  
 ```
 
 
