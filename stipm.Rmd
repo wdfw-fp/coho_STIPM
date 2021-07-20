@@ -582,6 +582,81 @@ sf_coord <- tbl_coho |>
 
 Skipping recreation of `state_cast` data object of compiled prior forecasts.
 
+## Cross-reference
+
+Dump a file for discussion and review of included series.
+
+```{r dataset_out}
+# tbl_coho |> 
+#   group_by(pop_id, pop) |> 
+#   summarise(
+#     year_min = min(`Calendar Year`),
+#     year_max = max(`Calendar Year`),
+#     nobs_any = n(),
+#     across(c(spwn, hvst, `Smolt Abundance`, Release_No), ~sum(!is.na(.))),
+#     .groups = "drop"
+#   ) |> #print(n = 50)
+#   ##writexl::write_xlsx("stipm_pops_crosscheck.xlsx")
+```
+
+Pull in the most recent BackwardsFRAM and Cohort tables
+
+```{r read_bkfram_cohort}
+#manually crossref'd to "fram_coho_escapement_2021_020121.xlsx"
+#comparing 
+
+db <- "O:/code/coho_fram_validation/PSC_CoTC_PostSeason_CohoFRAMDB_2010thru2019_021021.mdb"
+db_con <- DBI::dbConnect(drv = odbc::odbc(),
+  .connection_string = paste0("Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=",db,";"))
+tbl(db_con, "RunID") |> select(RunID, RunYear, TAMMName) #34:43, 2010:2019
+#no idea why RunID == 0 is in this database...
+#or why 39/2015 has 246 (vs 93 to 95 in other runs/years)...maybe just 0s for all stocks
+bkfram <- tbl(db_con, "BackwardsFRAM") |> 
+  filter(between(RunID, 34, 43)) |> 
+  select(RunID, StockID, escp = TargetEscAge3) |> 
+  left_join(tbl(db_con, "RunID") |> select(RunID, RunYear, RunTitle, TAMMName), by = "RunID") |> 
+  left_join(tbl(db_con, "Stock") |> filter(Species == "COHO") |> select(StockID, StockLongName), by = "StockID") |> 
+  collect()
+
+cohort <- tbl(db_con, "Cohort") |> 
+  filter(between(RunID, 34, 43)) |> 
+  select(-PrimaryKey) |> 
+  left_join(tbl(db_con, "RunID") |> select(RunID, RunYear, RunTitle, TAMMName), by = "RunID") |> 
+  left_join(tbl(db_con, "Stock") |> filter(Species == "COHO") |> select(StockID, StockLongName), by = "StockID") |> 
+  collect()
+
+DBI::dbDisconnect(db_con)
+```
+
+```{r bkfram_cohort}
+# #not sure which, if any, of these are comparable...
+# cohort |> #count(RunID, RunYear) |> 
+#   select(RunYear, StockID, StockLongName, TimeStep, Cohort, StartCohort) |> 
+#   filter(
+#     str_detect(StockLongName, "Wild|Natural"),
+#     StockID < 165, TimeStep == 1
+#     )
+
+bkfram |> #count(RunID, RunYear) |> 
+  select(RunYear, StockID, StockLongName, escp) |> 
+  filter(
+    str_detect(StockLongName, "Wild|Natural"),
+    !(RunYear == 2015 & escp == 0),
+    StockID < 165,
+    between(RunYear, 2016, 2017)
+    ) |> 
+  pivot_wider(names_from = RunYear, values_from = escp) |> 
+  print(n = 100)
+
+tbl_coho |> 
+  select(`Calendar Year`, pop, spwn) |> 
+  filter(between(`Calendar Year`, 2016, 2017)) |> 
+  pivot_wider(names_from = `Calendar Year`, values_from = spwn) |> 
+  print(n = 40)
+
+```
+
+
 # fit stan
 
 ## original STIPM
