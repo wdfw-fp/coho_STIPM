@@ -972,7 +972,7 @@ fit_ar1 <- stan(
   )
 ```
 
-```{r}
+```{r fit_ar1_summary}
 #beginning to examine stan fit objects
 
 # #seem really unwieldy, could use some improvement
@@ -1013,8 +1013,7 @@ fit_ar1_summary$adult_est |> print(n = 100)
 
 ```
 
-
-```{r}
+```{r popid_vectors}
 maybe_drop_popids <- c(
 #these should probably go...
   10, #not sure what this actually is...
@@ -1031,8 +1030,7 @@ focal_popids <- c(36:33, 29, 26)
 focal_popids <- 36
 ```
 
-
-```{r}
+```{r playing_with_fit_ar1}
 tbl_coho |> 
   #filter( !(pop_id %in% maybe_drop_popids)) |> 
   filter( pop_id %in% focal_popids) |> 
@@ -1051,13 +1049,56 @@ tbl_coho |>
       filter( pop_id %in% focal_popids) |> 
       select(year, pop_id, pop, var, val = `50%`)) +
   scale_fill_grey(aesthetics = c("fill", "color")) +
-  scale_x_continuous("Return", n.breaks = 12,  guide = guide_axis(n.dodge = 2)) +
-  scale_y_continuous(labels = scales::comma) +
+  scale_x_continuous(n.breaks = 12,  guide = guide_axis(n.dodge = 2)) +
+  scale_y_continuous("Return", labels = scales::comma) +
   facet_wrap(~pop_id + pop, scales = "free", labeller = label_wrap_gen(multi_line = F), ncol = 1)
 
 ```
 
 
-# predict forward
+# sliding refits?
+
+Basic approach of passing a data subset could be stretching (y1:yn) or sliding ([yn-window]:yn).
+
+Generally prefer sliding, and arguably considerably weaker data earlier in the series, but could be good reasons to stretch here...
+
+```{r}
+library(slider)
+
+focal_popids <- 35:36
+
+#dummy example to rough out the pattern
+foo <- tbl_coho_stan$rtrn |> 
+  filter( pop_id %in% focal_popids) |> 
+  select(year = `Calendar Year`, pop_id, pop, rtrn) |>
+  group_by(pop_id, pop) |> 
+  mutate(
+    rtrn_mu5 = slide_dbl(rtrn, mean, .before = 5),
+    lm_fit = slide(
+      .x = cur_data(), #the subset of rows
+      .f = ~lm(rtrn ~ year, data = .x), #the thing to do to them
+      .before = 5, #how far back to look
+      .complete = T
+    ),
+    lm_pred = lm_fit |> 
+      map_dbl(~if_else(is.null(.x), NA_real_, last(.x$fitted.values)))
+  ) |> 
+  ungroup()
+
+foo |> 
+  select(year, pop_id, pop, rtrn, rtrn_mu5, lm_pred) |> 
+  pivot_longer(cols = -c(year, pop_id, pop), names_to = "var", values_to = "val") |> 
+  {\(x) 
+  ggplot(x, aes(year, val, color = var)) +
+  geom_line(data = filter(x, var != "rtrn")) +
+  geom_point(data = filter(x, var == "rtrn")) + 
+  scale_x_continuous(n.breaks = 10,  guide = guide_axis(n.dodge = 2)) +
+  facet_wrap(~pop_id + pop, scales = "free", ncol = 1)
+  }()
+
+```
+
+
+
 
 # compare skill
