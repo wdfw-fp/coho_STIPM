@@ -851,7 +851,7 @@ tbl_coho_stan <- list(
 )
 ```
 
-```{r revised_stan_fit}
+```{r revised_stan_fit_stipm}
 #would prefer better within-list naming convention, but for now left as-is other than reorg around data types
 fit_stipm <- stan(
   file = 'LD_coho_forecast_6_2_4.stan', 
@@ -933,7 +933,7 @@ fit_stipm <- stan(
 
 ## revised AR1
 
-```{r}
+```{r stan_fit_ar1}
 # #	only a few population-years missing estimates
 # tbl_coho_stan$rtrn |> count(pop_id) |> print(n=50)
   
@@ -942,8 +942,8 @@ fit_stipm <- stan(
 # a "n_year_true_tot" gets declared but not passed and not expected by AR stan
 fit_ar1 <- stan(
   file = 'LD_coho_forecast_AR_ind_2.stan',
-  iter = 200,
-  chains = 3,
+  iter = 400,
+  chains = 4,
   control = list(
     adapt_delta = 0.99,
     max_treedepth = 10.25
@@ -974,20 +974,87 @@ fit_ar1 <- stan(
 
 ```{r}
 #beginning to examine stan fit objects
-#seem really unwieldy, could use some improvement
-#but more or less following orig for now
-fit_ar1_df <- as.data.frame(fit_ar1) |> tibble()
-grep(pattern = "adult_pred", colnames(fit_ar1_df), value = T)
-#the rows are posterior draws?
-fit_ar1_df[, "adult_pred[36]"]
 
-fit_ar1_df |> 
-  select(contains("adult_pred")) |> 
-  pivot_longer(names_to = "adult_pred_pop", values_to = "pred", cols = everything()) |> 
-  group_by(adult_pred_pop) |> 
-  summarise(across(pred, list(median = median)), .groups = "drop") |> print(n=50)
+# #seem really unwieldy, could use some improvement
+# #but more or less following orig for now
+# fit_ar1_df <- as.data.frame(fit_ar1) |> tibble()
+# grep(pattern = "adult_pred", colnames(fit_ar1_df), value = T)
+# fit_ar1_df[, "adult_pred[36]"]
+# fit_ar1_df |> 
+#   select(contains("adult_pred")) |> 
+#   pivot_longer(names_to = "adult_pred_pop", values_to = "pred", cols = everything()) |> 
+#   group_by(adult_pred_pop) |> 
+#   summarise(across(pred, list(median = median)), .groups = "drop") |> print(n=50)
   
-  
+#only really need the "merged chains" output from summary()?
+fit_ar1_summary <- list(
+  #adult_est is [year, pop] indexed
+  adult_est = summary(fit_ar1, pars = "adult_est", probs = c(0.1, 0.5, 0.9))$summary |> 
+    as.data.frame() |> rownames_to_column("stan_out") |> tibble() |> 
+    mutate(
+      var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+      year = (min(tbl_coho$`Calendar Year`) - 1) + as.numeric(str_extract(stan_out, "[0-9]{1,2}")),
+      pop_id = str_remove(stan_out, var) |> str_split(",") |> map_dbl( ~str_extract(.x[2], "[0-9]+") |> as.numeric())
+    ) |> 
+    left_join(tbl_coho |> distinct(pop_id, pop), by = "pop_id")
+  ,
+  #adult_pred is pop indexed only
+  adult_pred = summary(fit_ar1, pars = "adult_pred", probs = c(0.1, 0.5, 0.9))$summary |> 
+    as.data.frame() |> rownames_to_column("stan_out") |> tibble() |> 
+    mutate(
+      var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+      pop_id = as.numeric(str_extract(stan_out, "[0-9]+"))
+    ) |> 
+    left_join(tbl_coho |> distinct(pop_id, pop), by = "pop_id")
+)
+
+fit_ar1_summary$adult_pred |> print(n = 100)
+fit_ar1_summary$adult_est |> print(n = 100)
+
+```
+
+
+```{r}
+maybe_drop_popids <- c(
+#these should probably go...
+  10, #not sure what this actually is...
+  24, #Pt Gamble, fixed BKFRAM input, not a pop
+#these maybe...
+  14, #Dungeness, recent estimate difficulties, but smolt ests
+  16, #Elwha, recent method changes and special habitat case 
+  18, #Green, relevance, recent estimate difficulties, but smolt ests
+  21, #LkWA, relevance/pop size
+  23 #Nooksack, proxy not an escp est, but smolt ests
+  )
+
+focal_popids <- c(36:33, 29, 26)
+focal_popids <- 36
+```
+
+
+```{r}
+tbl_coho |> 
+  #filter( !(pop_id %in% maybe_drop_popids)) |> 
+  filter( pop_id %in% focal_popids) |> 
+  select(year = `Calendar Year`, pop_id, pop, spwn, hvst) |> 
+  pivot_longer(c(spwn, hvst), names_to = "var", values_to = "val") |> 
+  ggplot(aes(year, val, fill = var, color = var)) +
+  geom_col(position = "stack") +
+  geom_ribbon(
+    aes(x = year, ymin = `10%`, ymax = `90%`), inherit.aes = F,
+    data = fit_ar1_summary$adult_est |> 
+      filter( pop_id %in% focal_popids) |> 
+      select(year, pop_id, pop, var, `10%`, `90%`),
+    alpha = 0.3, color = "gold", fill = "gold") +
+  geom_line(
+    data = fit_ar1_summary$adult_est |> 
+      filter( pop_id %in% focal_popids) |> 
+      select(year, pop_id, pop, var, val = `50%`)) +
+  scale_fill_grey(aesthetics = c("fill", "color")) +
+  scale_x_continuous("Return", n.breaks = 12,  guide = guide_axis(n.dodge = 2)) +
+  scale_y_continuous(labels = scales::comma) +
+  facet_wrap(~pop_id + pop, scales = "free", labeller = label_wrap_gen(multi_line = F), ncol = 1)
+
 ```
 
 
