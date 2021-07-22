@@ -20,6 +20,7 @@ library("tidyverse")
 library("rstan")
 options(mc.cores = 10) #12 on DA machine
 rstan_options(auto_write = TRUE)
+theme_set(theme_light())
 
 f_orig <- "Coho_IPM_spatial_AR.r"
 
@@ -193,10 +194,9 @@ tbl_coho |>
 
 # fit stan
 
-## STIPM
+Here we declare a few intermediates to reduce repeated filter calls around different data elements (reaching the vectors with no missing data required by stan).
 
-```{r revised_stan_data}
-#declare a few intermediates to reduce the repeated filter calls around different data elements
+```{r tbl_coho_stan}
 tbl_coho_stan <- list(
   smolt = tbl_coho |> filter(!is.na(`Smolt Abundance`)),
   esc = tbl_coho |> filter(!is.na(spwn)),
@@ -213,6 +213,8 @@ tbl_coho_stan <- list(
 )
 ```
 
+## STIPM
+
 ```{r revised_stan_fit_stipm}
 #dropping iter for testing but otherwise using original function default control args on L456-7
 #actual fit on L1272 uses 20K iter and 5 chains but otherwise same
@@ -220,14 +222,14 @@ tbl_coho_stan <- list(
 #would prefer better within-list naming convention, but for now left as-is other than reorg around data types
 fit_stipm <- stan(
   file = 'LD_coho_forecast_6_2_4.stan', 
-  iter = 200,
-  chains = 3,
+  iter = 1000,
+  chains = 4,
   control = list(
     adapt_delta = 0.99,
     max_treedepth = 10.25
     ),
   thin = 1,
-  seed = 666,
+  seed = 222,
   data = list(
     n_year = length(unique(tbl_coho$`Calendar Year`)), #orig includes NA with 1986:2018
     n_pop = length(unique(tbl_coho$pop_id)), #orig includes 8 additional IDs for plotting 'Name' only (i.e., no data)
@@ -270,21 +272,11 @@ fit_stipm <- stan(
     #NOT WHAT WE WANT: hatchery = filter(tbl_coho_stan$MS, hat == 1) |> distinct(pop_id) |> pluck("pop_id"),
     hatchery = distinct(tbl_coho_stan$MS, pop_id, pop, hat) |> 
       mutate(hat_id = if_else(hat > 0, row_number(), NA_integer_)) |> 
-      filter(!is.na(hat_id)) |>
-      pluck("hat_id"),
-    # ## intentional or subtle error in orig due to which() wrapping re-indexing?
-    ## NOTE LEAVING AS-IS ORIG PENDING CLARIFICATION
-    hatchery = which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==1]))),
-    wild = which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==0]))),
-    ### 
-    # (pop_MS <- unique(coho_dat_full$pop[which(is.na(coho_dat_full$Release_No)==FALSE)])) #L470 orig
-    # identical(pop_MS, unique(tbl_coho_stan$MS$pop_id)) #matching the set of IDs with marine survival data
-    # coho_dat_full |> filter(pop %in% pop_MS, Hatchery == 1) |> distinct(pop) #IDs of pops with hatchery flag 1 presumably the goal?
-    # coho_dat_full |> filter(!is.na(Release_No), Hatchery == 1) |> distinct(pop) #same with inline redeclare of pop_MS
-    # which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==1]))) #NOT same...returns indexes of pop_MS
-    # #was it meant to be population IDs or indices of pop_MS?
-    # pop_MS[which(pop_MS %in% unique(na.omit(coho_dat_full$pop[coho_dat_full$Hatchery==1])))] #matches pluck'd version above...
-    
+      filter(!is.na(hat_id)) |> pluck("hat_id"),
+    wild = distinct(tbl_coho_stan$MS, pop_id, pop, hat) |> 
+      mutate(hat_id = if_else(hat < 1, row_number(), NA_integer_)) |> 
+      filter(!is.na(hat_id)) |> pluck("hat_id"), 
+ 
     slice_smolt_start = tbl_coho_stan$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
     slice_smolt_end = tbl_coho_stan$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
     
@@ -311,14 +303,14 @@ fit_stipm <- stan(
 # a "n_year_true_tot" gets declared but not passed and not expected by AR stan
 fit_ar1 <- stan(
   file = 'LD_coho_forecast_AR_ind_2.stan',
-  iter = 400,
+  iter = 1000,
   chains = 4,
   control = list(
     adapt_delta = 0.99,
     max_treedepth = 10.25
   ),
   thin = 1,
-  seed = 666,
+  seed = 222,
   data = list(
     #Number of years (total, includes several missing years for some stocks)
     n_year = length(unique(tbl_coho$`Calendar Year`)) + 1,
@@ -341,44 +333,51 @@ fit_ar1 <- stan(
   )
 ```
 
+## summarize fitted
+
 ```{r fit_ar1_summary}
-#beginning to examine stan fit objects
+#TB suggest appending "adult_pred" as the 1-ahead "forecast"
+#little wrapper to mod later, revise reliance on global `tbl_coho` for pop string lu
+#only really need the "merged chains" output from summary() if continuing this route?
 
-# #seem really unwieldy, could use some improvement
-# #but more or less following orig for now
-# fit_ar1_df <- as.data.frame(fit_ar1) |> tibble()
-# grep(pattern = "adult_pred", colnames(fit_ar1_df), value = T)
-# fit_ar1_df[, "adult_pred[36]"]
-# fit_ar1_df |> 
-#   select(contains("adult_pred")) |> 
-#   pivot_longer(names_to = "adult_pred_pop", values_to = "pred", cols = everything()) |> 
-#   group_by(adult_pred_pop) |> 
-#   summarise(across(pred, list(median = median)), .groups = "drop") |> print(n=50)
-  
-#only really need the "merged chains" output from summary()?
-fit_ar1_summary <- list(
-  #adult_est is [year, pop] indexed
-  adult_est = summary(fit_ar1, pars = "adult_est", probs = c(0.1, 0.5, 0.9))$summary |> 
-    as.data.frame() |> rownames_to_column("stan_out") |> tibble() |> 
-    mutate(
-      var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-      year = (min(tbl_coho$`Calendar Year`) - 1) + as.numeric(str_extract(stan_out, "[0-9]{1,2}")),
-      pop_id = str_remove(stan_out, var) |> str_split(",") |> map_dbl( ~str_extract(.x[2], "[0-9]+") |> as.numeric())
-    ) |> 
-    left_join(tbl_coho |> distinct(pop_id, pop), by = "pop_id")
+fit_smry <- function(fit_obj, p = c(0.1, 0.5, 0.9)) {
+  lu <- tbl_coho |> distinct(pop_id, pop)
+  x <- list(
+    #adult_est is [year, pop] indexed
+    adult_est = summary(fit_obj, pars = "adult_est", probs = p)$summary |> 
+      as.data.frame() |> rownames_to_column("stan_out") |> tibble() |> 
+      mutate(
+        var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+        year = (min(tbl_coho$`Calendar Year`) - 1) + as.numeric(str_extract(stan_out, "[0-9]{1,2}")),
+        pop_id = str_remove(stan_out, var) |> str_split(",") |> map_dbl( ~str_extract(.x[2], "[0-9]+") |> as.numeric())
+      ) |> 
+      left_join(lu, by = "pop_id")
+    ,
+    #adult_pred is pop indexed only
+    adult_pred = summary(fit_obj, pars = "adult_pred", probs = p)$summary |> 
+      as.data.frame() |> rownames_to_column("stan_out") |> tibble() |> 
+      mutate(
+        var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+        pop_id = as.numeric(str_extract(stan_out, "[0-9]+"))
+      ) |> 
+      left_join(lu, by = "pop_id")
+  )
+  return(x)
+}
+
+fit_stipm_smry <- fit_smry(fit_stipm) #takes a few...
+fit_ar1_smry <- fit_smry(fit_ar1)
+
+fit_ar1_smry$adult_pred |> print(n = 100)
+fit_ar1_smry$adult_est |> print(n = 100)
+tail(fit_ar1_smry$adult_est)
+tail(fit_ar1_smry$adult_pred) 
+#true...
+identical(
+  fit_ar1_smry$adult_est |> filter(year == 2019) |> select(mean)
   ,
-  #adult_pred is pop indexed only
-  adult_pred = summary(fit_ar1, pars = "adult_pred", probs = c(0.1, 0.5, 0.9))$summary |> 
-    as.data.frame() |> rownames_to_column("stan_out") |> tibble() |> 
-    mutate(
-      var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-      pop_id = as.numeric(str_extract(stan_out, "[0-9]+"))
-    ) |> 
-    left_join(tbl_coho |> distinct(pop_id, pop), by = "pop_id")
-)
-
-fit_ar1_summary$adult_pred |> print(n = 100)
-fit_ar1_summary$adult_est |> print(n = 100)
+  fit_ar1_smry$adult_pred |> select(mean)
+  )
 
 ```
 
@@ -424,6 +423,19 @@ tbl_coho |>
 
 ```
 
+```{r}
+bind_rows(
+  fit_ar1_smry$adult_est |> mutate(fit = "ar1")
+  ,
+  fit_stipm_smry$adult_est |> mutate(fit = "stipm")
+  ) |> 
+  filter(pop_id %in% focal_popids) |> 
+  ggplot(aes(x = year, y = `50%`, ymin = `10%`, ymax = `90%`, color = fit, fill = fit)) +
+  scale_y_continuous("Estimated adult return", labels = scales::comma) +
+  wacolors::scale_fill_wa_d( aesthetics = c("fill", "color") ) +
+  geom_ribbon(alpha = 0.5)
+```
+
 
 # sliding refits?
 
@@ -464,6 +476,12 @@ foo |>
   scale_x_continuous(n.breaks = 10,  guide = guide_axis(n.dodge = 2)) +
   facet_wrap(~pop_id + pop, scales = "free", ncol = 1)
   }()
+```
+
+
+```{r}
+#likely preferable to slide/stretch only for convenient dataset subsetting?
+
 
 ```
 
