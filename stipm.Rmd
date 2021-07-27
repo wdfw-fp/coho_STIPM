@@ -17,6 +17,7 @@ This script updates and extends the [original implementation](https://github.com
 knitr::opts_chunk$set(echo = TRUE, results = FALSE, warning = FALSE, message = FALSE)
 
 library("tidyverse")
+library("odbc"); library("DBI")
 library("rstan")
 options(mc.cores = 10) #12 on DA machine
 rstan_options(auto_write = TRUE)
@@ -24,12 +25,33 @@ theme_set(theme_light())
 
 f_orig <- "Coho_IPM_spatial_AR.r"
 
-#will reorg and rename these as needed
 fp <- list(
+  fram_mdb_pre2010 = "O:/code/coho_fram_validation/FramVS2-PSC-Coho-Backwards-thru2016 use me.mdb",
+  fram_mdb_2010onward =  "O:/code/coho_fram_validation/PSC_CoTC_PostSeason_CohoFRAMDB_2010thru2019_021021.mdb",
   coho_file = 'Coho data_3-30-20.csv',
   cwt_file = 'CWT_FRAM_Matches_complete20200303.csv',
   stream_file = 'Coho_KM_3.31.2020_2.csv'
   )
+
+#lu_stock <- readxl::read_excel("stipm_pops_crosscheck.xlsx")
+#lu_stock |> filter(FRAM_StockID != 10, FRAM_StockID != 24) |> pluck("FRAM_StockID") |> paste0(collapse = ",")
+#drop 13 and 43
+fram_stocks <- c(105,93,89,45,51,55,75,81,61,23,149,63,107,115,111,157,97,135,153,101,69,1,85,139,131,127,145,11,17,59,35,29,117,161)
+
+maybe_drop_popids <- c(
+#these should probably go...
+  10, #not sure what this actually is...
+  24, #Pt Gamble, fixed BKFRAM input, not a pop
+#these maybe...
+  14, #Dungeness, recent estimate difficulties, but smolt ests
+  16, #Elwha, recent method changes and special habitat case 
+  18, #Green, relevance, recent estimate difficulties, but smolt ests
+  21, #LkWA, relevance/pop size
+  23 #Nooksack, proxy not an escp est, but smolt ests
+  )
+
+focal_popids <- c(36:33, 29, 26)
+focal_popids <- 36
 
 ```
 
@@ -135,7 +157,7 @@ Dump a file for discussion and review of included series.
 #   ##writexl::write_xlsx("stipm_pops_crosscheck.xlsx")
 ```
 
-Pull in the most recent BackwardsFRAM and Cohort tables
+Pull in recent BackwardsFRAM and Cohort tables
 
 ```{r read_bkfram_cohort}
 #manually crossref'd to "fram_coho_escapement_2021_020121.xlsx"
@@ -164,7 +186,7 @@ cohort <- tbl(db_con, "Cohort") |>
 DBI::dbDisconnect(db_con)
 ```
 
-```{r bkfram_cohort}
+```{r crossref_bkfram_cohort}
 # #not sure which, if any, of these are comparable...
 # cohort |> #count(RunID, RunYear) |> 
 #   select(RunYear, StockID, StockLongName, TimeStep, Cohort, StartCohort) |> 
@@ -190,6 +212,112 @@ tbl_coho |>
   pivot_wider(names_from = `Calendar Year`, values_from = spwn) |> 
   print(n = 40)
 
+```
+
+## alternative ingest from CoTC post-season databases
+
+Coho FRAM tracks age 3 fish across 5 time steps corresponding to a calendar year. It includes unmarked and marked units of both natural and hatchery stocks. Prior to 1998, the marked and unmarked components in validation runs were each simply defined as 50% of the hatchery or wild values.
+
+The current set of post-season runs is split across two Access file databases corresponding to pre-2010 and 2010-onward.
+
+```{r}
+#preferable to read from "Escapement" table here?
+
+read_coho_backwards <- function (db, runs = NULL, stocks = NULL) {
+
+  db_con <- DBI::dbConnect(drv = odbc::odbc(),
+    .connection_string = paste0("Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=", db, ";"))
+
+  #lazy, full table then reduce as specified
+  bk <- dplyr::tbl(db_con, "BackwardsFRAM") |> dplyr::select(RunID, StockID, escp = TargetEscAge3)
+  if (!is.null(runs)) { bk <- dplyr::filter(bk, RunID %in% runs) }
+  if (!is.null(stocks)) { bk <- dplyr::filter(bk, StockID %in% stocks) }
+
+  #associate metainfo and pull
+  bk <- bk |> 
+    dplyr::left_join(
+      dplyr::tbl(db_con, "RunID") |>  dplyr::select(RunID, RunYear, RunName), 
+      by = "RunID") |>
+    dplyr::left_join(
+      dplyr::tbl(db_con, "Stock") |> dplyr::filter(Species == "COHO") |> dplyr::select(StockID, StockLongName),
+      by = "StockID") |>
+    dplyr::collect() |> 
+    dplyr::arrange(RunYear, StockID)
+
+  DBI::dbDisconnect(db_con)
+  
+  return(bk)
+}
+
+read_coho_mort <- function (db, runs = NULL, stocks = NULL) {
+  
+  db_con <- DBI::dbConnect(drv = odbc::odbc(),
+    .connection_string = paste0("Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=", db, ";"))
+  
+  #lazy, full table then reduce as specified
+  m <- dplyr::tbl(db_con, "Mortality") |> dplyr::select(-PrimaryKey)
+  if (!is.null(runs)) { m <- dplyr::filter(m, RunID %in% runs) }
+  if (!is.null(stocks)) { m <- dplyr::filter(m, StockID %in% stocks) }
+
+  #associate metainfo and pull
+  m <- m |> 
+    dplyr::left_join(
+      dplyr::tbl(db_con, "RunID") |>  dplyr::select(RunID, RunYear, RunName), 
+      by = "RunID") |>
+    dplyr::left_join(
+      dplyr::tbl(db_con, "Stock") |> dplyr::filter(Species == "COHO") |> dplyr::select(StockID, StockLongName),
+      by = "StockID") |>
+    dplyr::left_join(
+      dplyr::tbl(db_con, "Fishery") |> dplyr::filter(Species == "COHO") |> dplyr::select(FisheryID, FisheryName), 
+      by = "FisheryID") |> 
+    dplyr::collect() |> 
+    dplyr::arrange(RunYear, FisheryID, TimeStep, StockID)
+
+  DBI::dbDisconnect(db_con)
+  
+  return(m)
+}
+
+fram <- list(
+  bk = bind_rows(
+    read_coho_backwards(fp$fram_mdb_pre2010, runs = c(2:22,25:28), stocks = fram_stocks) 
+    ,
+    read_coho_backwards(fp$fram_mdb_2010onward, runs = 34:43, stocks = fram_stocks)
+  )
+  ,
+  m = bind_rows(
+    read_coho_mort(fp$fram_mdb_pre2010, runs = c(2:22,25:28), stocks = fram_stocks)
+    ,
+    read_coho_mort(fp$fram_mdb_2010onward, runs = 34:43, stocks = fram_stocks)
+  ) |>
+    mutate(mort = LandedCatch + NonRetention + Shaker + DropOff + MSFLandedCatch + MSFNonRetention + MSFShaker + MSFDropOff) |> 
+    group_by(RunYear, StockID, StockLongName) |> 
+    summarise(mort = sum(mort), .groups = "drop")
+)
+
+
+fram$bk |> #count(RunID, RunYear) |> 
+  select(RunYear, StockID, StockLongName, escp) |> 
+  # filter(
+  #   !(RunYear == 2015 & escp == 0),
+  #   between(RunYear, 2016, 2017)
+  #   ) |> 
+  pivot_wider(names_from = RunYear, values_from = escp) |> 
+  print(n = 100)
+
+
+fram$m |> 
+  pivot_wider(names_from = RunYear, values_from = mort)
+
+# #looks like going to need to redo against Escapement table?
+#   tbl(db_con, "Escapement") %>%
+#     filter(RunID %in% runs, StockID %in% stocks) %>% collect() %>%
+#     left_join(tbl(db_con, "Stock") %>% filter(Species == "COHO") %>% select(StockID, StockName) %>% collect(), by = "StockID") %>%
+#     mutate(h_w = str_sub(StockName,3,20) %>% `==`(.,"willaw") %>% if_else("Wild","Hatchery")) %>%
+#     left_join(tbl(db_con, "RunID") %>% select(RunID, year = RunYear) %>% collect(), by = "RunID") %>%
+#     group_by(year, h_w) %>% summarise(escp = sum(Escapement)) %>% ungroup(),
+  
+  
 ```
 
 # fit stan
@@ -379,23 +507,6 @@ identical(
   fit_ar1_smry$adult_pred |> select(mean)
   )
 
-```
-
-```{r popid_vectors}
-maybe_drop_popids <- c(
-#these should probably go...
-  10, #not sure what this actually is...
-  24, #Pt Gamble, fixed BKFRAM input, not a pop
-#these maybe...
-  14, #Dungeness, recent estimate difficulties, but smolt ests
-  16, #Elwha, recent method changes and special habitat case 
-  18, #Green, relevance, recent estimate difficulties, but smolt ests
-  21, #LkWA, relevance/pop size
-  23 #Nooksack, proxy not an escp est, but smolt ests
-  )
-
-focal_popids <- c(36:33, 29, 26)
-focal_popids <- 36
 ```
 
 ```{r playing_with_fit_ar1}
