@@ -11,6 +11,19 @@ output:
 
 This script updates and extends the [original implementation](https://github.com/lukasdefilippo/ST-IPM) of [DeFilippo et al.'s (2021)](https://www.sciencedirect.com/science/article/pii/S0165783621001429) "Spatiotemporal Integrated Population Model" (ST-IPM) of Washington state natural origin coho (*O. kisutch*) returns, with initial application to annual preseason forecasts of Willapa Bay returning adults.
 
+TODO
+
+ - revisit extracting `_est` and/or `_pred`: 
+  - current AR1 stan call runs through last_data_year+1, so 2018 dataset includes 2019 in `adult_est`
+  - but current STIPM stan call ends `adult_est` in last_data_year, with y+1 in `adult_pred`?
+ - how to get "2022" given postseason FRAM through 2019
+ - revise/move "fit stan" section with one_ahead wrappers:
+  - first do one-aheads to calc skill (still need to write perf measure funcs, but quick)
+  - then do "full" series fits for "final" forecast(s)
+ - revise one_ahead wrappers to provide less data?
+ - confer with MB on backwards-vs-escapement mismatches
+
+
 # setup
 
 ```{r setup, results = FALSE, warning = FALSE, message = FALSE}
@@ -508,12 +521,20 @@ fit_ar1 <- stan(
 
 ## summarize fitted
 
-Need to revisit extracting `_est` and/or `_pred`, perhaps different for STIPM vs AR1?
-
 Also, with current `tbl_coho_filter_to_stan` and `one_ahead` with `year_min` argument > min year in `tbl_coho` full dataset, the `yr` indexing is reset to `year_min`, hence the additional argument here.
 
+```{r try_tidybayes, eval=FALSE}
+#could further examine library(tidybayes)? and/or library(bayesplot)?
+library(tidybayes)
+
+fit_ar1 |> 
+  recover_types(tbl_coho_stan$rtrn) |> #not doing much since pops already numerically indexed
+  spread_draws(adult_est[y,i]) |> #TMI?
+  median_qi()
+```
+
 ```{r fit_smry}
-#TB suggest appending "adult_pred" as the 1-ahead "forecast"
+#TB suggest appending "adult_pred" as the next year "forecast" in STIPM..?
 #little wrapper to mod later, revise reliance on global `tbl_coho` for pop string lu
 #only really need the "merged chains" output from summary() if continuing this route?
 
@@ -584,12 +605,12 @@ tbl_coho |>
   geom_col(position = "stack") +
   geom_ribbon(
     aes(x = year, ymin = `10%`, ymax = `90%`), inherit.aes = F,
-    data = fit_ar1_summary$adult_est |> 
+    data = fit_ar1_smry$adult_est |> 
       filter( pop_id %in% focal_popids) |> 
       select(year, pop_id, pop, var, `10%`, `90%`),
     alpha = 0.3, color = "gold", fill = "gold") +
   geom_line(
-    data = fit_ar1_summary$adult_est |> 
+    data = fit_ar1_smry$adult_est |> 
       filter( pop_id %in% focal_popids) |> 
       select(year, pop_id, pop, var, val = `50%`)) +
   scale_fill_grey(aesthetics = c("fill", "color")) +
@@ -599,7 +620,7 @@ tbl_coho |>
 
 ```
 
-```{r}
+```{r toy_ribbons}
 bind_rows(
   fit_ar1_smry$adult_est |> mutate(fit = "ar1")
   ,
@@ -806,7 +827,6 @@ str(one_ahead_ar1, max.level = 1)
 
 one_ahead_stipm_smry <- map(.x = one_ahead_stipm, .f = fit_smry, year_min = one_ahead_year_min)
 
-
 names(one_ahead_stipm_smry) |> 
   map_df(
     ~one_ahead_stipm_smry[[.x]]$adult_est |> 
@@ -819,8 +839,8 @@ names(one_ahead_stipm_smry) |>
   scale_fill_brewer(type = "qual", aesthetics = c("fill", "color") ) +
   geom_ribbon(alpha = 0.2) + geom_line() +
   geom_point(
-    data = tbl_coho_stan$rtrn |> filter(pop_id == 36, year >= one_ahead_year_min) |> select(year, rtrn),
-    aes(year, rtrn),
+    data = tbl_coho_stan$esc |> filter(pop_id == 36, year >= one_ahead_year_min) |> select(year, spwn),
+    aes(year, spwn),
     inherit.aes = F) +
   facet_wrap(~pop)
 
@@ -846,6 +866,62 @@ names(one_ahead_ar1_smry) |>
   facet_wrap(~pop)
 
 
+#ar1 written so data through 2017 generates a 2018 in adult_est
+one_ahead_ar1_smry$`2017`$adult_est |> tail()
+#but stipm through 2017 ends adult_est with 2017
+one_ahead_stipm_smry$`2017`$adult_est |> tail()
+#and perhaps adds 2018 in adult_pred
+one_ahead_stipm_smry$`2015`$adult_pred |> tail()
+
 ```
 
+```{r}
+#further into future just with larger n_year? oh yes.
+
+fit_ar1_test <- stan(
+  file = 'LD_coho_forecast_AR_ind_2.stan',
+  iter = 200, chains = 2, thin = 1, seed = 222,
+  control = list(adapt_delta = 0.99, max_treedepth = 10.25),
+  data = list(
+    #Number of years (total, includes several missing years for some stocks)
+    n_year = length(unique(tbl_coho$year))*2,
+    #Number of total populations    
+    n_pop = length(unique(tbl_coho$pop_id)),
+    #Number of populations with return data
+    n_pop_tot = length(unique(tbl_coho_stan$rtrn$pop_id)),
+    #Which populations possess return data
+    pop_tot = unique(tbl_coho_stan$rtrn$pop_id),
+    #Length of the return data vectors
+    n_tot = nrow(tbl_coho_stan$rtrn), #length(tot_dat)
+    #Vectors of all return data across all populations
+    tot_dat = tbl_coho_stan$rtrn$rtrn,
+    #Vectors of the indices identifying which years are those with non-NA data for the return data
+    tot_true = tbl_coho_stan$rtrn$yr,
+    #Paired vectors of slice points indicating the beginning, and end of the data for a particular population
+    slice_tot_start = tbl_coho_stan$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+    slice_tot_end = tbl_coho_stan$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
+    )
+  )
+
+fit_ar1_test_smry <- fit_smry(fit_ar1_test)
+
+fit_ar1_test_smry$adult_est |> #tail() 
+  filter(pop_id > 30) |> 
+  ggplot(aes(x = year)) +
+  scale_y_continuous("Estimated adult return", labels = scales::comma) +
+  scale_fill_brewer(type = "qual", aesthetics = c("fill", "color") ) +
+  geom_ribbon(aes(ymin = `10%`, ymax = `90%`), alpha = 0.2) + 
+  geom_line(aes(y = `50%`)) +
+  geom_point(
+    data = tbl_coho_stan$rtrn |> filter(pop_id > 30) |> select(year, pop, pop_id, rtrn),
+    aes(y = rtrn),
+    inherit.aes = T) +
+  facet_wrap(~pop)
+
+```
+
+
 # diagnostics and results
+
+
+
