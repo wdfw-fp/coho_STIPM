@@ -47,8 +47,8 @@ fp <- list(
   )
 
 #lu_stock <- readxl::read_excel("stipm_pops_crosscheck.xlsx")
-#lu_stock |> filter(FRAM_StockID != 10, FRAM_StockID != 24) |> pluck("FRAM_StockID") |> paste0(collapse = ",")
-#drop 13 and 43
+#lu_stock |> filter(FRAM_StockID != 13, FRAM_StockID != 43) |> pluck("FRAM_StockID") |> paste0(collapse = ",")
+#drop FRAM StockID 13 and 43
 fram_stocks <- c(105,93,89,45,51,55,75,81,61,23,149,63,107,115,111,157,97,135,153,101,69,1,85,139,131,127,145,11,17,59,35,29,117,161)
 
 maybe_drop_popids <- c(
@@ -154,11 +154,11 @@ sf_coord <- tbl_coho |>
 
 Skipping recreation of `state_cast` data object of compiled prior forecasts.
 
-## Cross-reference
+## LU export
 
 Dump a file for discussion and review of included series.
 
-```{r dataset_out}
+```{r stipm_pops}
 # tbl_coho |> 
 #   group_by(pop_id, pop) |> 
 #   summarise(
@@ -169,66 +169,32 @@ Dump a file for discussion and review of included series.
 #     .groups = "drop"
 #   ) |> #print(n = 50)
 #   ##writexl::write_xlsx("stipm_pops_crosscheck.xlsx")
-```
 
-Pull in recent BackwardsFRAM and Cohort tables
-
-```{r read_bkfram_cohort}
-#manually crossref'd to "fram_coho_escapement_2021_020121.xlsx"
-#comparing 
-
-db <- "O:/code/coho_fram_validation/PSC_CoTC_PostSeason_CohoFRAMDB_2010thru2019_021021.mdb"
-db_con <- DBI::dbConnect(drv = odbc::odbc(),
-  .connection_string = paste0("Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=",db,";"))
-tbl(db_con, "RunID") |> select(RunID, RunYear, TAMMName) #34:43, 2010:2019
-#no idea why RunID == 0 is in this database...
-#or why 39/2015 has 246 (vs 93 to 95 in other runs/years)...maybe just 0s for all stocks
-bkfram <- tbl(db_con, "BackwardsFRAM") |> 
-  filter(between(RunID, 34, 43)) |> 
-  select(RunID, StockID, escp = TargetEscAge3) |> 
-  left_join(tbl(db_con, "RunID") |> select(RunID, RunYear, RunTitle, TAMMName), by = "RunID") |> 
-  left_join(tbl(db_con, "Stock") |> filter(Species == "COHO") |> select(StockID, StockLongName), by = "StockID") |> 
-  collect()
-
-cohort <- tbl(db_con, "Cohort") |> 
-  filter(between(RunID, 34, 43)) |> 
-  select(-PrimaryKey) |> 
-  left_join(tbl(db_con, "RunID") |> select(RunID, RunYear, RunTitle, TAMMName), by = "RunID") |> 
-  left_join(tbl(db_con, "Stock") |> filter(Species == "COHO") |> select(StockID, StockLongName), by = "StockID") |> 
-  collect()
-
-DBI::dbDisconnect(db_con)
-```
-
-```{r crossref_bkfram_cohort}
-# #not sure which, if any, of these are comparable...
-# cohort |> #count(RunID, RunYear) |> 
-#   select(RunYear, StockID, StockLongName, TimeStep, Cohort, StartCohort) |> 
-#   filter(
-#     str_detect(StockLongName, "Wild|Natural"),
-#     StockID < 165, TimeStep == 1
-#     )
-
-bkfram |> #count(RunID, RunYear) |> 
-  select(RunYear, StockID, StockLongName, escp) |> 
-  filter(
-    str_detect(StockLongName, "Wild|Natural"),
-    !(RunYear == 2015 & escp == 0),
-    StockID < 165,
-    between(RunYear, 2016, 2017)
-    ) |> 
-  pivot_wider(names_from = RunYear, values_from = escp) |> 
-  print(n = 100)
-
-tbl_coho |> 
-  select(year, pop, spwn) |> 
-  filter(between(year, 2016, 2017)) |> 
-  pivot_wider(names_from = year, values_from = spwn) |> 
-  print(n = 40)
+# #4 cases of missing KM/Lat/Long due to the orig sequence of dataset construction
+# #where a few additional records are added after joining stream lengths
+# #but expect to drop 7/7A and Pt Gamble anyway
+# #also following orig approach on "median" of Lat/Long, though already uniform 
+# #manually copied into working xlsx, leaving pop_id/pops to confirm matches before deleting
+# tbl_coho |> 
+#   filter(!is.na(KM)) |>
+#   group_by(pop_id, pop) |> 
+#   summarise(across(c(Longitude, Latitude, KM), median), .groups = "drop") |> 
+#   write.table("clipboard", row.names = F)
 
 ```
 
-## alternative ingest from CoTC post-season databases
+## Cross-check and updates
+
+Alternative ingest from CoTC post-season databases. 
+
+Could begin from pop metadata. Currently would 
+
+```{r read_metadata}
+#can convert to csv etc. as needed
+readxl::read_excel("stipm_pops.xlsx")
+
+```
+
 
 Coho FRAM tracks age 3 fish across 5 time steps corresponding to a calendar year. It includes unmarked and marked units of both natural and hatchery stocks. Prior to 1998, the marked and unmarked components in validation runs were each simply defined as 50% of the hatchery or wild values.
 
@@ -340,200 +306,269 @@ fram <- list(
     group_by(RunYear, StockID, StockLongName) |> 
     summarise(mort = sum(mort), .groups = "drop")
 )
+```
 
-#### Quick diagnostics
+```{r xcheck_spwn}
+#current dataset has 1986-2018 with a few NAs
+tbl_coho |> 
+  select(year, pop, spwn) |> 
+#  filter(between(year, 2016, 2017)) |> 
+  pivot_wider(names_from = year, values_from = spwn) |> 
+  print(n = 40)
 
-#through 1998
-fram$bk |> #count(RunID, RunYear) |> 
+#BackwardsFRAM table has 1998-2019
+fram$bk |> 
+  #count(RunID, RunYear) |> print(n = 30)
   select(RunYear, StockID, StockLongName, escp) |> 
   # filter(
   #   !(RunYear == 2015 & escp == 0),
   #   between(RunYear, 2016, 2017)
   #   ) |> 
-  pivot_wider(names_from = RunYear, values_from = escp) |> print(n = 100)
+  pivot_wider(names_from = RunYear, values_from = escp) |> 
+  print(n = 100)
 
-#back to 1985
+#Escapement table has 1985-2019
+#very likely the main source for orig dataset
+#and/but is "post-FRAM" rather than directly received and has potential for negative
+#see the -433 in 2005 for FRAMid 51/A12A wild
+fram$escp |> filter(escp < 0)
 fram$escp |> 
   select(RunYear, StockID, StockLongName, escp) |> 
   pivot_wider(names_from = RunYear, values_from = escp) |> print(n = 100)
 
-#note also potential for negative values in FRAM-generated escapement
-fram$escp |> filter(escp < 0)
-
-#some meaningful differences do exist in some year-stocks, including recent
-#values can be larger from either/both tables
-#but mostly larger in BK
-left_join(
-  fram$bk |> select(RunYear, StockID, escp), 
-  fram$escp |> select(RunYear, StockID, escp),
-  by = c("RunYear", "StockID"),
-  suffix = c("bk", "es")
+#note the cbind doesn't imply diffs are calc'd from the same stock
+#but that's actually useful to see if the stock ordering changes
+#2016, many exact matches, larger diffs have larger escp in orig
+#1998-99...basically perfect matches
+#1986-1997 FRAM is 50% of orig (i.e. dataset using 2x FRAM val)
+y <- 1997
+fram$escp |> 
+  select(RunYear, StockID, StockLongName, escp) |> 
+  pivot_wider(names_from = RunYear, values_from = escp) |> 
+  select(StockID, StockLongName, fram_yr = as.character(y)) |> 
+  arrange(desc(fram_yr)) |> 
+  bind_cols(
+    tbl_coho |> select(year, pop_id, pop, spwn) |> 
+      filter(pop_id != 10, pop_id != 24) |> 
+      pivot_wider(names_from = year, values_from = spwn) |> 
+      select(pop_id, pop, orig_yr = as.character(y)) |> 
+      arrange(desc(orig_yr))
   ) |> 
-  mutate(d = escpbk - escpes) |> filter(abs(d) > 100) |> arrange(desc(d)) |> print(n = 100)
+  mutate(d_fram_orig = fram_yr - orig_yr) |> 
+  print(n = 100)
 
-fram$m |> pivot_wider(names_from = RunYear, values_from = mort) |> print(n = 100)
-  
+# #Backwards vs Escapement
+# #some meaningful differences do exist in some year-stocks, including recent
+# #values can be larger from either/both tables
+# #but mostly larger in BK
+# left_join(
+#   fram$bk |> select(RunYear, StockID, escp), 
+#   fram$escp |> select(RunYear, StockID, escp),
+#   by = c("RunYear", "StockID"),
+#   suffix = c("bk", "es")
+#   ) |> 
+#   mutate(d = escpbk - escpes) |> 
+#   filter(abs(d) > 100) |> arrange(desc(d)) |> print(n = 100)
+
 ```
+
+```{r xcheck_hvst}
+#2016, 1998 vals are very close, within range of calculation error
+#1997 and older show the same doubling relative to FRAM, though not exact due to inversion calc
+y <- 1986
+fram$m |> 
+  select(RunYear, StockID, StockLongName, mort) |> 
+  pivot_wider(names_from = RunYear, values_from = mort) |> 
+  select(StockID, StockLongName, fram_yr = as.character(y)) |> 
+  arrange(desc(fram_yr)) |> 
+  bind_cols(
+    tbl_coho |> select(year, pop_id, pop, hvst) |> 
+      filter(pop_id != 10, pop_id != 24) |> 
+      pivot_wider(names_from = year, values_from = hvst) |> 
+      select(pop_id, pop, orig_yr = as.character(y)) |> 
+      arrange(desc(orig_yr))
+  ) |> 
+  mutate(d_fram_orig = fram_yr - orig_yr) |> 
+  print(n = 100)
+
+# #note WB naturals regularly one of the larger harvests according to FRAM
+# fram$m |> 
+#   select(RunYear, StockID, StockLongName, mort) |> 
+#   ggplot(aes(RunYear, mort, fill = StockLongName)) +
+#   geom_col(color = "grey") + scale_fill_discrete(guide = guide_legend(ncol = 1))
+
+```
+
+```{r viz_older_2x}
+library("patchwork")
+
+#what are these older year vals? FRAM archive guesses...?
+#For WB, the first return year with escapement data in the regionally maintained run reconstruction file is 1996
+#file "2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", sheet RR
+#1996: NOR escp+catch 15711+10992; tbl_coho is 16022 spwn, 11239 hvst; FRAM is 8011 escp, 5750 mort
+#1997: NOR escp+catch 4934+1009; tbl_coho 5472+1530; FRAM is 2736+783
+#1998: NOR escp+catch 13804+9200; tbl_coho 13806+10418; FRAM 13806+10579
+#1999: NOR escp+catch 9628+1965; tbl_coho 12355+3319; FRAM 12355+3352
+#2000: NOR escp+catch 23034+5003; tbl_coho 23032+7181; FRAM 23032+7345
+{
+  filter(tbl_coho, pop_id == 36, between(year, 1986, 2017)) |> 
+    select(year, pop, spwn, hvst) |> pivot_longer(c(spwn, hvst), names_to = "var", values_to = "val") |> 
+    mutate(var = factor(var, levels = c("spwn", "hvst"))) |> filter(year == 1999)
+    ggplot(aes(as.character(year), val, fill = var)) + geom_col() +
+    scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
+    scale_y_continuous("Willapa nat") +
+    scale_fill_manual(values = c("spwn" = "darkgreen", "hvst" = "orange")) + labs(title = "Coho data_3-30-20.csv")
+}+{
+  inner_join(
+    filter(fram$escp, StockID == 161) |> select(year = RunYear, StockID, pop = StockLongName, escp),
+    filter(fram$m, StockID == 161) |> select(year = RunYear, StockID, pop = StockLongName, mort),
+    by = c("year", "StockID", "pop")
+  ) |>
+    filter(between(year, 1986, 2017)) |> 
+    pivot_longer(c(escp, mort), names_to = "var", values_to = "val") |> filter(year == 1999)
+    ggplot(aes(year, val, fill = var)) + geom_col() + 
+    scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
+    scale_y_continuous("Willapa nat") +
+    scale_fill_manual(values = c("escp" = "darkgreen", "mort" = "orange")) + labs(title = "FRAM Escapement+Mortality tables")
+}
+
+```
+
 
 # fit stan
 
-Here we declare a few intermediates to reduce repeated filter calls around different data elements (reaching the vectors with no missing data required by stan).
-
-```{r tbl_coho_stan}
-#wrapper to incrementally (re)build stan-ready intermediary objects
-tbl_coho_filter_to_stan <- function(full, year_min = 1986, year_max = 2018){
-  full = full |> 
-    filter(between(year, year_min, year_max)) |> 
+```{r wrapper_stan_stipm}
+stan_stipm <- function(full, year_min, year_max, n_iter = 200, n_chain = 2){
+  #trim years
+  full_ymin_ymax = filter(full, between(year, year_min, year_max)) |> 
     mutate(yr = year - min(year) + 1)
-  list(
-    smolt = filter(full, !is.na(`Smolt Abundance`)),
-    esc = filter(full, !is.na(spwn)),
-    #mutate overrides the single bad harvest val related to neg escapement/ER>1 issue above
-    catch = filter(full, !is.na(hvst)) |> mutate(hvst = abs(hvst)),
-    MS = filter(full, !is.na(Release_No)), #note both "Release_No" and "Fishery_Plus_Escapement" are used in orig, setting up potential divergence conflict
-    rtrn = full |> mutate(rtrn = spwn + abs(hvst)) |> #same fix as catch
-      filter(!is.na(rtrn))
-  )
-}
-
-tbl_coho_stan <- tbl_coho_filter_to_stan(tbl_coho, year_min = 1986, year_max = 2018) #as original
-```
-
-## STIPM
-
-```{r revised_stan_fit_stipm}
-#dropping iter for testing but otherwise using original function default control args on L456-7
-#actual fit on L1272 uses 20K iter and 5 chains but otherwise same
-
-#would prefer better within-list naming convention, but for now left as-is other than reorg around data types
-fit_stipm <- stan(
-  file = 'LD_coho_forecast_6_2_4.stan', 
-  iter = 200,
-  chains = 4,
-  control = list(
-    adapt_delta = 0.99,
-    max_treedepth = 10.25
-    ),
-  thin = 1,
-  seed = 222,
-  data = list(
-    n_year = length(unique(tbl_coho$year)), #orig includes NA with 1986:2018
-    n_pop = length(unique(tbl_coho$pop_id)), #orig includes 8 additional IDs for plotting 'Name' only (i.e., no data)
-    u = matrix(1, nrow = 1, ncol = length(unique(tbl_coho$pop_id))),
-    dist = units::drop_units(sf::st_distance(sf_coord)/10000), #values are identical
-    #could also: as.matrix(dist(sf::st_coordinates(coord), 'euclidean', diag = TRUE, upper = TRUE)/10000)
-    
-    pop_smolt = unique(tbl_coho_stan$smolt$pop_id), #pop_ids with smolt data 
-    n_pop_smolt = length(unique(tbl_coho_stan$smolt$pop_id)),
-    smolt_true = tbl_coho_stan$smolt$yr,
-    smolt_dat = tbl_coho_stan$smolt$`Smolt Abundance`,
-    n_smolt = nrow(tbl_coho_stan$smolt),
-    
-    pop_esc = unique(tbl_coho_stan$esc$pop_id),  # pop_ids with escapement data
-    n_pop_esc = length(unique(tbl_coho_stan$esc$pop_id)),
-    esc_true = tbl_coho_stan$esc$yr,
-    esc_dat = tbl_coho_stan$esc$spwn,
-    n_esc = nrow(tbl_coho_stan$esc),
-    
-    pop_catch = unique(tbl_coho_stan$catch$pop_id), #pop_ids with harvest data
-    n_pop_catch = length(unique(tbl_coho_stan$catch$pop_id)),
-    harvest_true = tbl_coho_stan$catch$yr,
-    harvest_dat = tbl_coho_stan$catch$hvst,
-    n_harvest = nrow(tbl_coho_stan$catch),
-    
-    pop_MS = unique(tbl_coho_stan$MS$pop_id), #pop_ids with marine survival data
-    n_pop_MS = length(unique(tbl_coho_stan$MS$pop_id)),
-    MS_true = tbl_coho_stan$MS$yr, #orig uses Fishery_Plus_Escapement rather than Release_No to filter...
-    MS_dat_x = tbl_coho_stan$MS$Fishery_Plus_Escapement |> round(), #stan expects integer...
-    MS_dat_N = tbl_coho_stan$MS$Release_No,
-    n_MS = nrow(tbl_coho_stan$MS),
-    
-    stream_dist = tbl_coho |> group_by(pop) |> summarise(d = mean(KM, na.rm = T), .groups = "drop") |> select(d) |> unlist() |> as.numeric(),
-    
-    #elements called "sigma_catch" and "sigma_smolt" are commented out
-    #this is a passed arg in the orig exec_fun()
-    sigma_esc = 0.2,
-    
-    n_hatchery = filter(tbl_coho, hat == 1) |> distinct(pop_id) |> nrow(),
-    #NOT WHAT WE WANT: hatchery = filter(tbl_coho_stan$MS, hat == 1) |> distinct(pop_id) |> pluck("pop_id"),
-    hatchery = distinct(tbl_coho_stan$MS, pop_id, pop, hat) |> 
-      mutate(hat_id = if_else(hat > 0, row_number(), NA_integer_)) |> 
-      filter(!is.na(hat_id)) |> pluck("hat_id"),
-    wild = distinct(tbl_coho_stan$MS, pop_id, pop, hat) |> 
-      mutate(hat_id = if_else(hat < 1, row_number(), NA_integer_)) |> 
-      filter(!is.na(hat_id)) |> pluck("hat_id"), 
- 
-    slice_smolt_start = tbl_coho_stan$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-    slice_smolt_end = tbl_coho_stan$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
-    
-    slice_esc_start = tbl_coho_stan$esc |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-    slice_esc_end = tbl_coho_stan$esc |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
-    
-    slice_harvest_start = tbl_coho_stan$catch |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-    slice_harvest_end = tbl_coho_stan$catch |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
-    
-    slice_MS_start = tbl_coho_stan$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-    slice_MS_end = tbl_coho_stan$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
-  )
-)
-```
-
-## AR1
-
-```{r stan_fit_ar1}
-# #	only a few population-years missing estimates
-# tbl_coho_stan$rtrn |> count(pop_id) |> print(n=50)
   
-#why is n_year "+1" here?
-#"_tot" refers to "total return"
-# a "n_year_true_tot" gets declared but not passed and not expected by AR stan
-fit_ar1 <- stan(
-  file = 'LD_coho_forecast_AR_ind_2.stan',
-  iter = 200,
-  chains = 2,
-  control = list(
-    adapt_delta = 0.99,
-    max_treedepth = 10.25
-  ),
-  thin = 1,
-  seed = 222,
-  data = list(
-    #Number of years (total, includes several missing years for some stocks)
-    n_year = length(unique(tbl_coho$year)) + 1,
-    #Number of total populations    
-    n_pop = length(unique(tbl_coho$pop_id)),
-    #Number of populations with return data
-    n_pop_tot = length(unique(tbl_coho_stan$rtrn$pop_id)),
-    #Which populations possess return data
-    pop_tot = unique(tbl_coho_stan$rtrn$pop_id),
-    #Length of the return data vectors
-    n_tot = nrow(tbl_coho_stan$rtrn), #length(tot_dat)
-    #Vectors of all return data across all populations
-    tot_dat = tbl_coho_stan$rtrn$rtrn,
-    #Vectors of the indices identifying which years are those with non-NA data for the return data
-    tot_true = tbl_coho_stan$rtrn$yr,
-    #Paired vectors of slice points indicating the beginning, and end of the data for a particular population
-    slice_tot_start = tbl_coho_stan$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-    slice_tot_end = tbl_coho_stan$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
+  #declare separate intermediaries
+  stan_data = list(
+      smolt = filter(full_ymin_ymax, !is.na(`Smolt Abundance`)),
+      esc = filter(full_ymin_ymax, !is.na(spwn)),
+      catch = filter(full_ymin_ymax, !is.na(hvst)) |> mutate(hvst = abs(hvst)),
+      MS = filter(full_ymin_ymax, !is.na(Release_No)), #note both "Release_No" and "Fishery_Plus_Escapement" are used in orig, setting up potential divergence conflict
+      rtrn = full_ymin_ymax |> 
+        mutate(rtrn = spwn + abs(hvst)) |> #same fix as catch
+        filter(!is.na(rtrn))
+    )
+    
+  stan_fit <- stan(
+    file = 'LD_coho_forecast_6_2_4.stan', 
+    iter = n_iter, chains = n_chain, thin = 1, seed = 222,
+    control = list(adapt_delta = 0.99, max_treedepth = 10.25),
+    data = list(
+      n_year = length(year_min:year_max), 
+      n_pop = length(unique(stan_data$esc$pop_id)),
+      u = matrix(1, nrow = 1, ncol = length(unique(stan_data$esc$pop_id))),
+      dist = units::drop_units(sf::st_distance(sf_coord)/10000), #values are identical
+      
+      pop_smolt = unique(stan_data$smolt$pop_id), #pop_ids with smolt data 
+      n_pop_smolt = length(unique(stan_data$smolt$pop_id)),
+      smolt_true = stan_data$smolt$yr,
+      smolt_dat = stan_data$smolt$`Smolt Abundance`,
+      n_smolt = nrow(stan_data$smolt),
+      
+      pop_esc = unique(stan_data$esc$pop_id),  # pop_ids with escapement data
+      n_pop_esc = length(unique(stan_data$esc$pop_id)),
+      esc_true = stan_data$esc$yr,
+      esc_dat = stan_data$esc$spwn,
+      n_esc = nrow(stan_data$esc),
+      
+      pop_catch = unique(stan_data$catch$pop_id), #pop_ids with harvest data
+      n_pop_catch = length(unique(stan_data$catch$pop_id)),
+      harvest_true = stan_data$catch$yr,
+      harvest_dat = stan_data$catch$hvst,
+      n_harvest = nrow(stan_data$catch),
+      
+      pop_MS = unique(stan_data$MS$pop_id), #pop_ids with marine survival data
+      n_pop_MS = length(unique(stan_data$MS$pop_id)),
+      MS_true = stan_data$MS$yr, #orig uses Fishery_Plus_Escapement rather than Release_No to filter...
+      MS_dat_x = stan_data$MS$Fishery_Plus_Escapement |> round(), #stan expects integer...
+      MS_dat_N = stan_data$MS$Release_No,
+      n_MS = nrow(stan_data$MS),
+      
+      stream_dist = stan_data$esc |> distinct(pop, KM) |> pluck("KM"), #previously taking mean, but values should be identical at this stage
+      
+      sigma_esc = 0.2,
+      
+      n_hatchery = filter(stan_data$MS, hat == 1) |> distinct(pop_id) |> nrow(),
+      hatchery = distinct(stan_data$MS, pop_id, pop, hat) |> 
+        mutate(hat_id = if_else(hat > 0, row_number(), NA_integer_)) |> 
+        filter(!is.na(hat_id)) |> pluck("hat_id"),
+      wild = distinct(stan_data$MS, pop_id, pop, hat) |> 
+        mutate(hat_id = if_else(hat < 1, row_number(), NA_integer_)) |> 
+        filter(!is.na(hat_id)) |> pluck("hat_id"), 
+      
+      slice_smolt_start = stan_data$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_smolt_end = stan_data$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+      
+      slice_esc_start = stan_data$esc |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_esc_end = stan_data$esc |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+      
+      slice_harvest_start = stan_data$catch |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_harvest_end = stan_data$catch |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+      
+      slice_MS_start = stan_data$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_MS_end = stan_data$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
     )
   )
+  return(stan_fit)
+}
+
 ```
 
-## summarize fitted
-
-Also, with current `tbl_coho_filter_to_stan` and `one_ahead` with `year_min` argument > min year in `tbl_coho` full dataset, the `yr` indexing is reset to `year_min`, hence the additional argument here.
-
-```{r try_tidybayes, eval=FALSE}
-#could further examine library(tidybayes)? and/or library(bayesplot)?
-library(tidybayes)
-
-fit_ar1 |> 
-  recover_types(tbl_coho_stan$rtrn) |> #not doing much since pops already numerically indexed
-  spread_draws(adult_est[y,i]) |> #TMI?
-  median_qi()
+```{r wrapper_stan_ar1}
+stan_ar1 <- function(full, year_min, year_max, n_iter = 200, n_chain = 2){
+  #trim years
+  full_ymin_ymax = filter(full, between(year, year_min, year_max)) |> 
+    mutate(yr = year - min(year) + 1)
+  
+  #declare separate intermediaries
+  #only actually need `rtrn` in AR1 context?
+  stan_data = list(
+      smolt = filter(full_ymin_ymax, !is.na(`Smolt Abundance`)),
+      esc = filter(full_ymin_ymax, !is.na(spwn)),
+      catch = filter(full_ymin_ymax, !is.na(hvst)) |> mutate(hvst = abs(hvst)),
+      MS = filter(full_ymin_ymax, !is.na(Release_No)), #note both "Release_No" and "Fishery_Plus_Escapement" are used in orig, setting up potential divergence conflict
+      rtrn = full_ymin_ymax |> 
+        mutate(rtrn = spwn + abs(hvst)) |> #same fix as catch
+        filter(!is.na(rtrn))
+    )
+    
+  stan_fit <- stan(
+    file = 'LD_coho_forecast_AR_ind_2.stan',
+    iter = n_iter, chains = n_chain, thin = 1, seed = 222,
+    control = list(adapt_delta = 0.99, max_treedepth = 10.25),
+    data = list(
+      #Number of years (total, includes several missing years for some stocks)
+      n_year = length(year_min:year_max) + 1, 
+      #Number of total populations    
+      n_pop = length(unique(stan_data$rtrn$pop_id)),
+      #Number of populations with return data
+      n_pop_tot = length(unique(stan_data$rtrn$pop_id)),
+      #Which populations possess return data
+      pop_tot = unique(stan_data$rtrn$pop_id),
+      #Length of the return data vectors
+      n_tot = nrow(stan_data$rtrn), #length(tot_dat)
+      #Vectors of all return data across all populations
+      tot_dat = stan_data$rtrn$rtrn,
+      #Vectors of the indices identifying which years are those with non-NA data for the return data
+      tot_true = stan_data$rtrn$yr,
+      #Paired vectors of slice points indicating the beginning, and end of the data for a particular population
+      slice_tot_start = stan_data$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_tot_end = stan_data$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
+    )
+  )
+  
+  return(stan_fit)
+}
 ```
 
-```{r fit_smry}
+With current filtering with `year_min` argument > min year in `tbl_coho` full dataset, the `yr` indexing is reset to `year_min`, hence the additional argument here.
+
+```{r fit_smry_function}
 #TB suggest appending "adult_pred" as the next year "forecast" in STIPM..?
 #little wrapper to mod later, revise reliance on global `tbl_coho` for pop string lu
 #only really need the "merged chains" output from summary() if continuing this route?
@@ -566,7 +601,200 @@ fit_smry <- function(
   )
   return(x)
 }
+```
 
+
+```{r test_converge_start_1998}
+fit_stipm_86_17 <- stan_stipm(full = tbl_coho, year_min = 1986, year_max = 2017)
+
+fit_stipm_86_17_smry <- fit_smry(fit_stipm_86_17, year_min = 1986)
+
+
+fit_ar1_86_17 <- stan_ar1(full = tbl_coho, year_min = 1986, year_max = 2017)
+
+fit_ar1_86_17_smry <- fit_smry(fit_ar1_86_17, year_min = 1986)
+
+#currently incommensurate - AR1 returning spwn+hvst, STIPM just spwn...
+bind_rows(
+  fit_stipm_86_17_smry$adult_est |> mutate(fit = "stipm")
+  ,
+  fit_ar1_86_17_smry$adult_est |> mutate(fit = "ar1")
+) |> 
+  filter(pop_id == 36) |> 
+  ggplot(aes(x = year, fill = fit, color = fit)) +
+  scale_y_continuous("Estimated val", labels = scales::comma) +
+  scale_fill_brewer(type = "qual", aesthetics = c("fill", "color") ) +
+  geom_ribbon(aes(ymin = `10%`, ymax = `90%`), alpha = 0.2) + 
+  geom_line(aes(y = `50%`)) +
+  geom_point(
+    data = tbl_coho |> mutate(fit = "obs") |> filter(pop_id == 36) |> select(fit, year, pop, pop_id, spwn),
+    aes(y = spwn),
+    inherit.aes = T) +
+  facet_wrap(~pop)
+
+
+# #not yet run
+# fit_stipm_98_17 <- stan_stipm(full = tbl_coho, year_min = 1998, year_max = 2017)
+# 
+# fit_stipm_98_17_smry <- fit_smry(fit_stipm_86_17, year_min = 1998)
+
+```
+
+
+
+## Can delete soon
+
+Here we declare a few intermediates to reduce repeated filter calls around different data elements (reaching the vectors with no missing data required by stan).
+
+```{r tbl_coho_stan}
+#wrapper to incrementally (re)build stan-ready intermediary objects
+tbl_coho_filter_to_stan <- function(full, year_min = 1986, year_max = 2018){
+  full = full |> 
+    filter(between(year, year_min, year_max)) |> 
+    mutate(yr = year - min(year) + 1)
+  list(
+    smolt = filter(full, !is.na(`Smolt Abundance`)),
+    esc = filter(full, !is.na(spwn)),
+    #mutate overrides the single bad harvest val related to neg escapement/ER>1 issue above
+    catch = filter(full, !is.na(hvst)) |> mutate(hvst = abs(hvst)),
+    MS = filter(full, !is.na(Release_No)), #note both "Release_No" and "Fishery_Plus_Escapement" are used in orig, setting up potential divergence conflict
+    rtrn = full |> mutate(rtrn = spwn + abs(hvst)) |> #same fix as catch
+      filter(!is.na(rtrn))
+  )
+}
+
+tbl_coho_stan <- tbl_coho_filter_to_stan(tbl_coho, year_min = 1986, year_max = 2018) #as original
+```
+
+```{r revised_stan_fit_stipm}
+# #dropping iter for testing but otherwise using original function default control args on L456-7
+# #actual fit on L1272 uses 20K iter and 5 chains but otherwise same
+# 
+# #would prefer better within-list naming convention, but for now left as-is other than reorg around data types
+# fit_stipm <- stan(
+#   file = 'LD_coho_forecast_6_2_4.stan', 
+#   iter = 200,
+#   chains = 4,
+#   control = list(
+#     adapt_delta = 0.99,
+#     max_treedepth = 10.25
+#     ),
+#   thin = 1,
+#   seed = 222,
+#   data = list(
+#     n_year = length(unique(tbl_coho$year)), #orig includes NA with 1986:2018
+#     n_pop = length(unique(tbl_coho$pop_id)), #orig includes 8 additional IDs for plotting 'Name' only (i.e., no data)
+#     u = matrix(1, nrow = 1, ncol = length(unique(tbl_coho$pop_id))),
+#     dist = units::drop_units(sf::st_distance(sf_coord)/10000), #values are identical
+#     #could also: as.matrix(dist(sf::st_coordinates(coord), 'euclidean', diag = TRUE, upper = TRUE)/10000)
+#     
+#     pop_smolt = unique(tbl_coho_stan$smolt$pop_id), #pop_ids with smolt data 
+#     n_pop_smolt = length(unique(tbl_coho_stan$smolt$pop_id)),
+#     smolt_true = tbl_coho_stan$smolt$yr,
+#     smolt_dat = tbl_coho_stan$smolt$`Smolt Abundance`,
+#     n_smolt = nrow(tbl_coho_stan$smolt),
+#     
+#     pop_esc = unique(tbl_coho_stan$esc$pop_id),  # pop_ids with escapement data
+#     n_pop_esc = length(unique(tbl_coho_stan$esc$pop_id)),
+#     esc_true = tbl_coho_stan$esc$yr,
+#     esc_dat = tbl_coho_stan$esc$spwn,
+#     n_esc = nrow(tbl_coho_stan$esc),
+#     
+#     pop_catch = unique(tbl_coho_stan$catch$pop_id), #pop_ids with harvest data
+#     n_pop_catch = length(unique(tbl_coho_stan$catch$pop_id)),
+#     harvest_true = tbl_coho_stan$catch$yr,
+#     harvest_dat = tbl_coho_stan$catch$hvst,
+#     n_harvest = nrow(tbl_coho_stan$catch),
+#     
+#     pop_MS = unique(tbl_coho_stan$MS$pop_id), #pop_ids with marine survival data
+#     n_pop_MS = length(unique(tbl_coho_stan$MS$pop_id)),
+#     MS_true = tbl_coho_stan$MS$yr, #orig uses Fishery_Plus_Escapement rather than Release_No to filter...
+#     MS_dat_x = tbl_coho_stan$MS$Fishery_Plus_Escapement |> round(), #stan expects integer...
+#     MS_dat_N = tbl_coho_stan$MS$Release_No,
+#     n_MS = nrow(tbl_coho_stan$MS),
+#     
+#     stream_dist = tbl_coho |> group_by(pop) |> summarise(d = mean(KM, na.rm = T), .groups = "drop") |> select(d) |> unlist() |> as.numeric(),
+#     
+#     #elements called "sigma_catch" and "sigma_smolt" are commented out
+#     #this is a passed arg in the orig exec_fun()
+#     sigma_esc = 0.2,
+#     
+#     n_hatchery = filter(tbl_coho, hat == 1) |> distinct(pop_id) |> nrow(),
+#     #NOT WHAT WE WANT: hatchery = filter(tbl_coho_stan$MS, hat == 1) |> distinct(pop_id) |> pluck("pop_id"),
+#     hatchery = distinct(tbl_coho_stan$MS, pop_id, pop, hat) |> 
+#       mutate(hat_id = if_else(hat > 0, row_number(), NA_integer_)) |> 
+#       filter(!is.na(hat_id)) |> pluck("hat_id"),
+#     wild = distinct(tbl_coho_stan$MS, pop_id, pop, hat) |> 
+#       mutate(hat_id = if_else(hat < 1, row_number(), NA_integer_)) |> 
+#       filter(!is.na(hat_id)) |> pluck("hat_id"), 
+#  
+#     slice_smolt_start = tbl_coho_stan$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+#     slice_smolt_end = tbl_coho_stan$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+#     
+#     slice_esc_start = tbl_coho_stan$esc |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+#     slice_esc_end = tbl_coho_stan$esc |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+#     
+#     slice_harvest_start = tbl_coho_stan$catch |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+#     slice_harvest_end = tbl_coho_stan$catch |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+#     
+#     slice_MS_start = tbl_coho_stan$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+#     slice_MS_end = tbl_coho_stan$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
+#   )
+# )
+
+```
+
+```{r stan_fit_ar1}
+# # #	only a few population-years missing estimates
+# # tbl_coho_stan$rtrn |> count(pop_id) |> print(n=50)
+#   
+# #why is n_year "+1" here?
+# #"_tot" refers to "total return"
+# # a "n_year_true_tot" gets declared but not passed and not expected by AR stan
+# fit_ar1 <- stan(
+#   file = 'LD_coho_forecast_AR_ind_2.stan',
+#   iter = 200,
+#   chains = 2,
+#   control = list(
+#     adapt_delta = 0.99,
+#     max_treedepth = 10.25
+#   ),
+#   thin = 1,
+#   seed = 222,
+#   data = list(
+#     #Number of years (total, includes several missing years for some stocks)
+#     n_year = length(unique(tbl_coho$year)) + 1,
+#     #Number of total populations    
+#     n_pop = length(unique(tbl_coho$pop_id)),
+#     #Number of populations with return data
+#     n_pop_tot = length(unique(tbl_coho_stan$rtrn$pop_id)),
+#     #Which populations possess return data
+#     pop_tot = unique(tbl_coho_stan$rtrn$pop_id),
+#     #Length of the return data vectors
+#     n_tot = nrow(tbl_coho_stan$rtrn), #length(tot_dat)
+#     #Vectors of all return data across all populations
+#     tot_dat = tbl_coho_stan$rtrn$rtrn,
+#     #Vectors of the indices identifying which years are those with non-NA data for the return data
+#     tot_true = tbl_coho_stan$rtrn$yr,
+#     #Paired vectors of slice points indicating the beginning, and end of the data for a particular population
+#     slice_tot_start = tbl_coho_stan$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+#     slice_tot_end = tbl_coho_stan$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
+#     )
+#   )
+
+```
+
+```{r try_tidybayes, eval=FALSE}
+#could further examine library(tidybayes)? and/or library(bayesplot)?
+library(tidybayes)
+
+fit_ar1 |> 
+  recover_types(tbl_coho_stan$rtrn) |> #not doing much since pops already numerically indexed
+  spread_draws(adult_est[y,i]) |> #TMI?
+  median_qi()
+```
+
+```{r fit_smry_initial_testing}
 fit_stipm_smry <- fit_smry(fit_stipm) #takes a few...
 fit_ar1_smry <- fit_smry(fit_ar1)
 
@@ -676,7 +904,7 @@ foo |>
 
 ```{r one_ahead_controls}
 #now fairly trivial to build list of stan data lists
-one_ahead_year_min <- 2000
+one_ahead_year_min <- 1998
 one_ahead_years_max <- 2015:2017
 
 set_names(one_ahead_years_max) |> 
@@ -814,6 +1042,12 @@ str(one_ahead_ar1, max.level = 1)
 
 ```
 
+```{r revised_stretching_ar1}
+stretch_ar1 <- set_names(2011:2012) |> 
+  map(~stan_ar1(full = tbl_coho, one_ahead_year_min, .x))
+
+```
+
 
 # compare skill
 
@@ -821,7 +1055,7 @@ str(one_ahead_ar1, max.level = 1)
  - join to observed
  - calc measures
 
-```{r}
+```{r first_look_repeat_fits}
 #currently ~10s per year...
 #can/should reduce function to only adult_est?
 
@@ -875,7 +1109,7 @@ one_ahead_stipm_smry$`2015`$adult_pred |> tail()
 
 ```
 
-```{r}
+```{r test_2050s}
 #further into future just with larger n_year? oh yes.
 
 fit_ar1_test <- stan(
@@ -920,8 +1154,6 @@ fit_ar1_test_smry$adult_est |> #tail()
 
 ```
 
-
 # diagnostics and results
-
 
 
