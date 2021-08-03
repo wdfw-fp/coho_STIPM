@@ -437,6 +437,8 @@ library("patchwork")
 
 # fit stan
 
+## wrappers
+
 ```{r wrapper_stan_stipm}
 stan_stipm <- function(full, year_min, year_max, n_iter = 200, n_chain = 2){
   #trim years
@@ -603,15 +605,19 @@ fit_smry <- function(
 }
 ```
 
+## testing
 
 ```{r test_converge_start_1998}
-fit_stipm_86_17 <- stan_stipm(full = tbl_coho, year_min = 1986, year_max = 2017)
+## need to pull out PtGamble & 7/7A before pop_id assigned to avoid confusing stan indexing...
+# tbl_coho <- filter(tbl_coho, !str_detect(pop, "Gamble|7-7A"))
+# sf_coord <- filter(sf_coord, !str_detect(pop, "Gamble|7-7A")) 
 
+Sys.time()
+fit_stipm_86_17 <- stan_stipm(full = tbl_coho, year_min = 1986, year_max = 2017, n_iter = 2000, n_chain = 4)
 fit_stipm_86_17_smry <- fit_smry(fit_stipm_86_17, year_min = 1986)
-
+Sys.time()
 
 fit_ar1_86_17 <- stan_ar1(full = tbl_coho, year_min = 1986, year_max = 2017)
-
 fit_ar1_86_17_smry <- fit_smry(fit_ar1_86_17, year_min = 1986)
 
 #currently incommensurate - AR1 returning spwn+hvst, STIPM just spwn...
@@ -632,17 +638,59 @@ bind_rows(
     inherit.aes = T) +
   facet_wrap(~pop)
 
+Sys.time()
+fit_stipm_98_17 <- stan_stipm(full = tbl_coho, year_min = 1998, year_max = 2017, n_iter = 2000, n_chain = 4)
+fit_stipm_98_17_smry <- fit_smry(fit_stipm_98_17, year_min = 1998)
+Sys.time()
 
-# #not yet run
-# fit_stipm_98_17 <- stan_stipm(full = tbl_coho, year_min = 1998, year_max = 2017)
-# 
-# fit_stipm_98_17_smry <- fit_smry(fit_stipm_86_17, year_min = 1998)
+fit_ar1_98_17 <- stan_ar1(full = tbl_coho, year_min = 1998, year_max = 2017)
+fit_ar1_98_17_smry <- fit_smry(fit_ar1_98_17, year_min = 1998)
+
+bind_rows(
+  fit_ar1_86_17_smry$adult_est |> mutate(fit = "1986"),
+  fit_ar1_98_17_smry$adult_est |> mutate(fit = "1998")
+) |> 
+  filter(pop_id == 36) |> 
+  ggplot(aes(x = year, fill = fit, color = fit)) +
+  scale_y_continuous("Estimated val", labels = scales::comma) +
+  scale_fill_brewer(type = "qual", aesthetics = c("fill", "color") ) +
+  geom_ribbon(aes(ymin = `10%`, ymax = `90%`), alpha = 0.2) + 
+  geom_line(aes(y = `50%`)) +
+  geom_point(
+    data = tbl_coho |> mutate(fit = "obs", rtrn = spwn+hvst) |> filter(pop_id == 36) |> select(fit, year, pop, pop_id, rtrn),
+    aes(y = rtrn),
+    inherit.aes = T) +
+  facet_wrap(~pop)
+
+
+```
+
+## stretch OAT
+
+Moving ahead with brute-force pattern of refitting stan to year-range-filtered lists of the relevant data.
+
+Could break out the pre-stan dataset list creation so that only the actual stan call is getting mapped. Assuming relatively little change to the population set, this `data = list()` still has substantial inefficiency in repeated wrangling calls. However these are very fast and preserve greatest flexibility to gain/lose pops across years.
+
+Need to confirm desired year lag in the data being fed: n, n-1, n-2, ...?
+
+Likely need 2 separate year_max args? First for final year of obs, second for final year desired for estimation
+
+```{r revised_stretching_ar1}
+oat_year_min <- 1998
+oat_years_max <- 2009:2019
+
+#want to do as a walk() or for() with in-loop dump outs?
+#any way to reduce the memory claim? looks like AR1 is ~3-5min/yr for 1K4
+Sys.time()
+stretch_ar1 <- set_names(oat_years_max) |> 
+  map(~stan_ar1(full = tbl_coho, year_min = oat_year_min, .x, n_iter = 1000, n_chain = 4))
+Sys.time()
 
 ```
 
 
 
-## Can delete soon
+# Can delete soon
 
 Here we declare a few intermediates to reduce repeated filter calls around different data elements (reaching the vectors with no missing data required by stan).
 
@@ -862,11 +910,7 @@ bind_rows(
 ```
 
 
-# one-ahead prediction
-
-These chunks use a brute-force pattern of refitting stan to year-range-filtered lists of the relevant data.
-
-Going forward, especially if including more than STIPM and AR1, can/should break out the (currently repeated in-map) dataset list creation so that only the actual stan call is getting mapped.
+## one-ahead prediction
 
 ```{r demo_stretch_allpops}
 library(slider)
@@ -916,12 +960,6 @@ set_names(one_ahead_years_max) |>
               n = n(), ymin = min(year), ymax = max(year),
               ymin = min(yr), ymax = max(yr))))
 ```
-
-Assuming relatively little change to the population set, this `data = list()` still has substantial inefficiency in repeated wrangling calls. However these are very fast and preserve greatest flexibility to gain/lose pops across years.
-
-Related: there are still a couple of calls to `tbl_coho` full dataset for elements that should not change over years, but we want to reconfirm these are appropriate in a one-ahead mode.
-
-Need to confirm desired year lag in the data being fed: n, n-1, n-2, ...?
 
 ```{r one_ahead_stipm}
 #various stan warnings get hidden within map
@@ -1041,19 +1079,6 @@ one_ahead_ar1 <- set_names(one_ahead_years_max) |>
 str(one_ahead_ar1, max.level = 1)
 
 ```
-
-```{r revised_stretching_ar1}
-stretch_ar1 <- set_names(2011:2012) |> 
-  map(~stan_ar1(full = tbl_coho, one_ahead_year_min, .x))
-
-```
-
-
-# compare skill
-
- - map summary function across one-ahead fits
- - join to observed
- - calc measures
 
 ```{r first_look_repeat_fits}
 #currently ~10s per year...
