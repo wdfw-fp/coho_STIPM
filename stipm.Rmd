@@ -11,19 +11,6 @@ output:
 
 This script updates and extends the [original implementation](https://github.com/lukasdefilippo/ST-IPM) of [DeFilippo et al.'s (2021)](https://www.sciencedirect.com/science/article/pii/S0165783621001429) "Spatiotemporal Integrated Population Model" (ST-IPM) of Washington state natural origin coho (*O. kisutch*) returns, with initial application to annual preseason forecasts of Willapa Bay returning adults.
 
-TODO
-
- - revisit extracting `_est` and/or `_pred`: 
-  - current AR1 stan call runs through last_data_year+1, so 2018 dataset includes 2019 in `adult_est`
-  - but current STIPM stan call ends `adult_est` in last_data_year, with y+1 in `adult_pred`?
- - how to get "2022" given postseason FRAM through 2019
- - revise/move "fit stan" section with one_ahead wrappers:
-  - first do one-aheads to calc skill (still need to write perf measure funcs, but quick)
-  - then do "full" series fits for "final" forecast(s)
- - revise one_ahead wrappers to provide less data?
- - confer with MB on backwards-vs-escapement mismatches
-
-
 # setup
 
 ```{r setup, results = FALSE, warning = FALSE, message = FALSE}
@@ -39,168 +26,49 @@ theme_set(theme_light())
 f_orig <- "Coho_IPM_spatial_AR.r"
 
 fp <- list(
-  fram_mdb_pre2010 = "O:/code/coho_fram_validation/FramVS2-PSC-Coho-Backwards-thru2016 use me.mdb",
-  fram_mdb_2010onward =  "O:/code/coho_fram_validation/PSC_CoTC_PostSeason_CohoFRAMDB_2010thru2019_021021.mdb",
   coho_file = 'Coho data_3-30-20.csv',
   cwt_file = 'CWT_FRAM_Matches_complete20200303.csv',
   stream_file = 'Coho_KM_3.31.2020_2.csv'
   )
 
-#lu_stock <- readxl::read_excel("stipm_pops_crosscheck.xlsx")
-#lu_stock |> filter(FRAM_StockID != 13, FRAM_StockID != 43) |> pluck("FRAM_StockID") |> paste0(collapse = ",")
-#drop FRAM StockID 13 and 43
-fram_stocks <- c(105,93,89,45,51,55,75,81,61,23,149,63,107,115,111,157,97,135,153,101,69,1,85,139,131,127,145,11,17,59,35,29,117,161)
+# # #lu_stock <- readxl::read_excel("stipm_pops_crosscheck.xlsx")
+# # #lu_stock |> filter(FRAM_StockID != 13, FRAM_StockID != 43) |> pluck("FRAM_StockID") |> paste0(collapse = ",")
+# # #drop FRAM StockID 13 and 43, original pop_ids 10 and 24
+# fram_stocks <- c(105,93,89,45,51,55,75,81,61,23,149,63,107,115,111,157,97,135,153,101,69,1,85,139,131,127,145,11,17,59,35,29,117,161)
 
-maybe_drop_popids <- c(
-#these should probably go...
-  10, #not sure what this actually is...
-  24, #Pt Gamble, fixed BKFRAM input, not a pop
-#these maybe...
-  14, #Dungeness, recent estimate difficulties, but smolt ests
-  16, #Elwha, recent method changes and special habitat case 
-  18, #Green, relevance, recent estimate difficulties, but smolt ests
-  21, #LkWA, relevance/pop size
-  23 #Nooksack, proxy not an escp est, but smolt ests
-  )
+#can convert to csv etc. as needed
+#may drop orig 10 and 24 from xlsx and reindex? and then drop filter...
+pop_meta <- readxl::read_excel("stipm_pops.xlsx") |>
+  select(pop_id:hat, starts_with("FRAM_")) |>
+  filter(FRAM_StockID != 13, FRAM_StockID != 43)
 
-focal_popids <- c(36:33, 29, 26)
-focal_popids <- 36
+temp <- read_csv("data/postseason_fram_spwn_hvst_ests.csv")
+
+# maybe_drop_popids <- c(
+# #these should probably go...
+#   10, #not sure what this actually is...
+#   24, #Pt Gamble, fixed BKFRAM input, not a pop
+# #these maybe...
+#   14, #Dungeness, recent estimate difficulties, but smolt ests
+#   16, #Elwha, recent method changes and special habitat case 
+#   18, #Green, relevance, recent estimate difficulties, but smolt ests
+#   21, #LkWA, relevance/pop size
+#   23 #Nooksack, proxy not an escp est, but smolt ests
+#   )
 
 ```
 
 # data
 
-The analysis relies on per-stock escapement and harvest estimates compiled in post-season [coho FRAM](https://github.com/FRAMverse/fram_doc) runs as well as CWT-based marine survival estimates derived from RMIS.
+The analysis relies on per-stock escapement and harvest estimates compiled in post-season [coho FRAM](https://github.com/FRAMverse/fram_doc) runs as well as CWT-based marine survival estimates derived from RMIS, and smolt outmigrant estimates compiled by WDFW.
 
-Here, the original data ingest and preparation flow has been condensed following line-wise deconstruction, reconstruction and object testing.
+## FRAM postseason estimates of spawning escapement and harvest mortality
 
-The resulting "full data" object forms the basis for subsequent model-fitting, prediction and evaluation.
+Coho FRAM tracks age 3 fish across 5 time steps corresponding to a calendar year. It includes unmarked and marked units of both natural and hatchery stocks. 
 
-```{r tbl_coho_full}
-#presumably this will change further with a reduced/updated FRAM dataset
-#for now preserving smoltCWT<-->FRAMunit assignment choices in original
-#and largely preserving the order of operations (e.g., multiple filter())
+Data in the best available database extend to 1986, but all values prior to 1998 and some prior to 2004 are of unknown origin.
 
-drop_pop <- c("Queets", "Clearwater", 'Bell Creek', 'Johnson Creek', 'Jimmy Come Lately Creek',
-              'Deep Creek', 'McDonald Creek', 'Siebert Creek', 'Salt Creek', 'Discovery Bay',
-              'East Twin Creek', 'West Twin Creek', 'Northeast Hood Canal')
-
-drop_cwt_surv <- c("Minter Crk H", "Baker H", "Satsop H") 
-
-tbl_coho <- readr::read_csv(fp$coho_file) |> #1709x21
-  mutate(
-    pop = case_when(
-      !is.na(`SaSI Population`) ~ `SaSI Population`,
-      is.na(`SaSI Population`) & is.na(SubPopulation) ~ `Managment Unit (FRAM)`,
-      is.na(`SaSI Population`) & !is.na(SubPopulation) ~ SubPopulation
-    ),
-    spwn = case_when(
-      !is.na(`SaSI Population`) ~ `SASI Natural Origin Abundance`,
-      is.na(`SaSI Population`) & is.na(SubPopulation) ~ `Age 3 Escapement (FRAM)`,
-      is.na(`SaSI Population`) & !is.na(SubPopulation) ~ `SupPopulation Escapement`
-    ),
-    spwn = if_else(pop=="Discovery Bay", `SASI CompositeOrigin Abundance`, abs(spwn)) #corrects negative val for 2005 A12A Wild, orig L152
-    ,
-    hvst = spwn / (1/`Harvest (% FRAM)` - 1) 
-  ) |> 
-  filter( !(pop %in% drop_pop) ) |> 
-  select(`Calendar Year`, `Smolt Abundance`, Latitude, Longitude, pop, spwn, hvst) |> 
-  inner_join(
-    readr::read_csv(fp$stream_file) |> 
-      filter(Population != "", !is.na(Population)) |> #no NAs in the current csv, but left for now
-      select(pop = Population, KM)
-    ,
-    by = "pop") |> 
-  full_join(
-    readr::read_csv(fp$cwt_file) |> 
-      mutate(
-        hat = if_else(stringr::str_detect(`Smolt Ocean Survival Population`, " H$"), 1, 0)
-      ) |> 
-      filter( !(`Smolt Ocean Survival Population` %in% drop_cwt_surv)) |> 
-      select(pop = `Managment Unit (FRAM)`, `Calendar Year`, `Smolt Ocean Survival Population`, Fishery_Plus_Escapement, Release_No, hat)
-    ,
-    by = c("pop", "Calendar Year")) |> 
-  filter(`Calendar Year` > 1985) |> 
-  bind_rows(
-    tibble(`Calendar Year` = 2013, yr = 28, pop = "Area 7-7A Independent Wild"),
-    tibble(`Calendar Year` = 2004, yr = 19, pop = "Port Gamble Bay Wild"),
-    tibble(`Calendar Year` = 2000:2001, yr = 15:16, pop = "Grays Harbor Miscellaneous Wild")
-  ) |>
-  left_join(
-    bind_rows(
-      tibble(pop = "Green River Wild", Long = -122.2145, Lat = 47.3519),
-      tibble(pop = "Area 10E Miscellaneous Wild", Long = -122.8242, Lat = 47.5896)
-    )
-    , by = "pop") |>
-  mutate(
-    Longitude = if_else(is.na(Long), Longitude, Long), Long = NULL,
-    Latitude = if_else(is.na(Lat), Latitude, Lat), Lat = NULL,
-    Basin = if_else(Longitude < -123.80, 0, 1),
-    `Smolt Abundance` = if_else(pop == "Puyallup River Wild", NA_real_, `Smolt Abundance`),
-    hvst = if_else(stringr::str_detect(pop, "Quillayute River") & `Calendar Year` <= 1987, NA_real_, hvst),
-    pop_id = as.numeric(factor(pop)),
-    yr = `Calendar Year` - min(`Calendar Year`) + 1
-  ) |> 
-  rename(year = `Calendar Year`) |> 
-  arrange(pop)
-
-sf_coord <- tbl_coho |> 
-  group_by(pop, pop_id) |> 
-  summarise(long = median(Longitude, na.rm = T), lat = median(Latitude, na.rm = T), .groups = "drop") |> 
-  sf::st_as_sf(coords = c("long", 'lat'), crs = sf::st_crs("+proj=longlat +datum=WGS84")) |> 
-  sf::st_transform(crs = sf::st_crs("+proj=utm +zone=10T ellps=WGS84"))
-
-```
-
-Skipping recreation of `state_cast` data object of compiled prior forecasts.
-
-## LU export
-
-Dump a file for discussion and review of included series.
-
-```{r stipm_pops}
-# tbl_coho |> 
-#   group_by(pop_id, pop) |> 
-#   summarise(
-#     year_min = min(`Calendar Year`),
-#     year_max = max(`Calendar Year`),
-#     nobs_any = n(),
-#     across(c(spwn, hvst, `Smolt Abundance`, Release_No), ~sum(!is.na(.))),
-#     .groups = "drop"
-#   ) |> #print(n = 50)
-#   ##writexl::write_xlsx("stipm_pops_crosscheck.xlsx")
-
-# #4 cases of missing KM/Lat/Long due to the orig sequence of dataset construction
-# #where a few additional records are added after joining stream lengths
-# #but expect to drop 7/7A and Pt Gamble anyway
-# #also following orig approach on "median" of Lat/Long, though already uniform 
-# #manually copied into working xlsx, leaving pop_id/pops to confirm matches before deleting
-# tbl_coho |> 
-#   filter(!is.na(KM)) |>
-#   group_by(pop_id, pop) |> 
-#   summarise(across(c(Longitude, Latitude, KM), median), .groups = "drop") |> 
-#   write.table("clipboard", row.names = F)
-
-```
-
-## Cross-check and updates
-
-Alternative ingest from CoTC post-season databases. 
-
-Could begin from pop metadata. Currently would 
-
-```{r read_metadata}
-#can convert to csv etc. as needed
-readxl::read_excel("stipm_pops.xlsx")
-
-```
-
-
-Coho FRAM tracks age 3 fish across 5 time steps corresponding to a calendar year. It includes unmarked and marked units of both natural and hatchery stocks. Prior to 1998, the marked and unmarked components in validation runs were each simply defined as 50% of the hatchery or wild values.
-
-The current set of post-season runs is split across two Access file databases corresponding to pre-2010 and 2010-onward.
-
-```{r fram_readers}
+```{r fram_readers, eval=FALSE}
 read_coho_backwards <- function (db, runs = NULL, stocks = NULL) {
 
   db_con <- DBI::dbConnect(drv = odbc::odbc(),
@@ -282,6 +150,160 @@ read_coho_mort <- function (db, runs = NULL, stocks = NULL) {
   return(m)
 }
 ```
+
+```{r read_fram_tables, eval=FALSE}
+#the relevant data are queried and re-exported as csv
+#stays similar to original and allows greater reproducibility/portability
+mdb <- "O:/code/coho_fram_validation/PSC_CoTC_PostSeason_CohoFRAMDB_thru2019_021021.mdb"
+#appears to be a mysterious RunID 3 in the Escapement and Mortality tables but not RunID table...
+#aggregate mortality across timesteps for all sources to "estimated total harvest related impacts"
+fram <- full_join(
+  read_coho_escapement(mdb, stocks = pop_meta$FRAM_StockID) |> 
+    filter(!is.na(RunYear))
+  ,
+  read_coho_mort(mdb, stocks = pop_meta$FRAM_StockID) |>
+    filter(!is.na(RunYear)) |> 
+    mutate(mort = LandedCatch + NonRetention + Shaker + DropOff + MSFLandedCatch + MSFNonRetention + MSFShaker + MSFDropOff) |> 
+    group_by(RunYear, StockID, StockLongName) |> 
+    summarise(mort = sum(mort), .groups = "drop")
+  ,
+  by = c("RunYear", "StockID", "StockLongName")
+  ) |> 
+  select(year = RunYear, StockID, StockLongName, spwn = escp, hvst = mort)
+
+#fram |> filter(StockID == 161) |> print(n = 100)
+
+write_csv(fram, "data/postseason_fram_spwn_hvst_ests.csv")
+
+```
+
+## Smolt outmigrant estimates
+
+
+## RMIS releases and recoveries for marine survival
+
+
+## Prior preseason forecasts?
+
+
+
+```{r tbl_coho_full}
+#moving towards deletion
+#still working on smolt and CWT updates
+
+drop_pop <- c("Queets", "Clearwater", 'Bell Creek', 'Johnson Creek', 'Jimmy Come Lately Creek',
+              'Deep Creek', 'McDonald Creek', 'Siebert Creek', 'Salt Creek', 'Discovery Bay',
+              'East Twin Creek', 'West Twin Creek', 'Northeast Hood Canal')
+
+drop_cwt_surv <- c("Minter Crk H", "Baker H", "Satsop H") 
+
+tbl_coho <- readr::read_csv(fp$coho_file) |> #1709x21
+  mutate(
+    pop = case_when(
+      !is.na(`SaSI Population`) ~ `SaSI Population`,
+      is.na(`SaSI Population`) & is.na(SubPopulation) ~ `Managment Unit (FRAM)`,
+      is.na(`SaSI Population`) & !is.na(SubPopulation) ~ SubPopulation
+    ),
+    spwn = case_when(
+      !is.na(`SaSI Population`) ~ `SASI Natural Origin Abundance`,
+      is.na(`SaSI Population`) & is.na(SubPopulation) ~ `Age 3 Escapement (FRAM)`,
+      is.na(`SaSI Population`) & !is.na(SubPopulation) ~ `SupPopulation Escapement`
+    ),
+    spwn = if_else(pop=="Discovery Bay", `SASI CompositeOrigin Abundance`, abs(spwn)) #corrects negative val for 2005 A12A Wild, orig L152
+    ,
+    hvst = spwn / (1/`Harvest (% FRAM)` - 1) 
+  ) |> 
+  filter( !(pop %in% drop_pop) ) |> 
+  select(`Calendar Year`, `Smolt Abundance`, Latitude, Longitude, pop, spwn, hvst) |> 
+  inner_join(
+    readr::read_csv(fp$stream_file) |> 
+      filter(Population != "", !is.na(Population)) |> #no NAs in the current csv, but left for now
+      select(pop = Population, KM)
+    ,
+    by = "pop") |> 
+  full_join(
+    readr::read_csv(fp$cwt_file) |> 
+      mutate(
+        hat = if_else(stringr::str_detect(`Smolt Ocean Survival Population`, " H$"), 1, 0)
+      ) |> 
+      filter( !(`Smolt Ocean Survival Population` %in% drop_cwt_surv)) |> 
+      select(pop = `Managment Unit (FRAM)`, `Calendar Year`, `Smolt Ocean Survival Population`, Fishery_Plus_Escapement, Release_No, hat)
+    ,
+    by = c("pop", "Calendar Year")) |> 
+  filter(`Calendar Year` > 1985) |> 
+  bind_rows(
+    tibble(`Calendar Year` = 2013, yr = 28, pop = "Area 7-7A Independent Wild"),
+    tibble(`Calendar Year` = 2004, yr = 19, pop = "Port Gamble Bay Wild"),
+    tibble(`Calendar Year` = 2000:2001, yr = 15:16, pop = "Grays Harbor Miscellaneous Wild")
+  ) |>
+  left_join(
+    bind_rows(
+      tibble(pop = "Green River Wild", Long = -122.2145, Lat = 47.3519),
+      tibble(pop = "Area 10E Miscellaneous Wild", Long = -122.8242, Lat = 47.5896)
+    )
+    , by = "pop") |>
+  mutate(
+    Longitude = if_else(is.na(Long), Longitude, Long), Long = NULL,
+    Latitude = if_else(is.na(Lat), Latitude, Lat), Lat = NULL,
+    Basin = if_else(Longitude < -123.80, 0, 1),
+    `Smolt Abundance` = if_else(pop == "Puyallup River Wild", NA_real_, `Smolt Abundance`),
+    hvst = if_else(stringr::str_detect(pop, "Quillayute River") & `Calendar Year` <= 1987, NA_real_, hvst),
+    pop_id = as.numeric(factor(pop)),
+    yr = `Calendar Year` - min(`Calendar Year`) + 1
+  ) |> 
+  rename(year = `Calendar Year`) |> 
+  arrange(pop)
+
+sf_coord <- tbl_coho |> 
+  group_by(pop, pop_id) |> 
+  summarise(long = median(Longitude, na.rm = T), lat = median(Latitude, na.rm = T), .groups = "drop") |> 
+  sf::st_as_sf(coords = c("long", 'lat'), crs = sf::st_crs("+proj=longlat +datum=WGS84")) |> 
+  sf::st_transform(crs = sf::st_crs("+proj=utm +zone=10T ellps=WGS84"))
+
+```
+
+
+
+
+## LU export
+
+Dump a file for discussion and review of included series.
+
+```{r stipm_pops}
+# tbl_coho |> 
+#   group_by(pop_id, pop) |> 
+#   summarise(
+#     year_min = min(`Calendar Year`),
+#     year_max = max(`Calendar Year`),
+#     nobs_any = n(),
+#     across(c(spwn, hvst, `Smolt Abundance`, Release_No), ~sum(!is.na(.))),
+#     .groups = "drop"
+#   ) |> #print(n = 50)
+#   ##writexl::write_xlsx("stipm_pops_crosscheck.xlsx")
+
+# #4 cases of missing KM/Lat/Long due to the orig sequence of dataset construction
+# #where a few additional records are added after joining stream lengths
+# #but expect to drop 7/7A and Pt Gamble anyway
+# #also following orig approach on "median" of Lat/Long, though already uniform 
+# #manually copied into working xlsx, leaving pop_id/pops to confirm matches before deleting
+# tbl_coho |> 
+#   filter(!is.na(KM)) |>
+#   group_by(pop_id, pop) |> 
+#   summarise(across(c(Longitude, Latitude, KM), median), .groups = "drop") |> 
+#   write.table("clipboard", row.names = F)
+
+# # add CWT marine survival info
+# tbl_coho |> 
+#   distinct(pop_id, pop,`Smolt Ocean Survival Population`, hat) |> 
+#   filter(!is.na(hat)) |> 
+#   select(pop_id, `Smolt Ocean Survival Population`, hat) |> 
+#   right_join(tibble(pop_id = 1:36), by = "pop_id") |> arrange(pop_id) |> 
+#   write.table("clipboard", row.names = F, na = "")
+  
+
+```
+
+## Cross-check and updates
 
 ```{r read_fram_tables}
 fram <- list(
@@ -598,7 +620,13 @@ oat_years_max <- 2009:2019
 oat <- set_names(c(2014)) |> 
   map(function(x) {
     print(x)
-    stan_data_list <- stan_data_filter(tbl_coho, year_min = oat_year_min, year_max = x)
+    stan_data_list <- stan_data_filter(tbl_coho, year_min = oat_year_min, year_max = x) #with defaults
+    print(stan_data_list$y_min_max)
+    print(range(stan_data_list$smolt$year))
+    print(range(stan_data_list$MS$year))
+    print(range(stan_data_list$spwn$year))
+
+    stan_data_list <- stan_data_filter(tbl_coho, year_min = oat_year_min, year_max = x, lag_spwn = 1, lag_hvst = 1) #with "compiling" FRAM data
     print(stan_data_list$y_min_max)
     print(range(stan_data_list$smolt$year))
     print(range(stan_data_list$MS$year))
@@ -614,17 +642,19 @@ oat <- set_names(c(2014)) |>
     #   ) |> 
     #   left_join(lu, by = "pop_id")
     
-    fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
-    fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred", probs = p)$summary |> 
-      as.data.frame() |> rownames_to_column("stan_out") |> tibble() |> 
-      mutate(
-        var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-        pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-        year = last(stan_data_list$y_min_max) + 1 #should be x+1
-      ) |> 
-      left_join(lu, by = "pop_id")
+    # fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
+    # fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred", probs = p)$summary |> 
+    #   as.data.frame() |> rownames_to_column("stan_out") |> tibble() |> 
+    #   mutate(
+    #     var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+    #     pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
+    #     year = last(stan_data_list$y_min_max) + 1 #should be x+1
+    #   ) |> 
+    #   left_join(lu, by = "pop_id")
     
-    return(fit_stipm_pred)
+    # return(fit_ar1_pred)
+    # return(fit_stipm_pred)
+    
   })
 
 
