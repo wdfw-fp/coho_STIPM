@@ -413,7 +413,7 @@ library("patchwork")
 {
   filter(tbl_coho, pop_id == 36, between(year, 1986, 2017)) |> 
     select(year, pop, spwn, hvst) |> pivot_longer(c(spwn, hvst), names_to = "var", values_to = "val") |> 
-    mutate(var = factor(var, levels = c("spwn", "hvst"))) |> filter(year == 1999)
+    mutate(var = factor(var, levels = c("spwn", "hvst"))) |> #filter(year == 1999)
     ggplot(aes(as.character(year), val, fill = var)) + geom_col() +
     scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
     scale_y_continuous("Willapa nat") +
@@ -425,7 +425,7 @@ library("patchwork")
     by = c("year", "StockID", "pop")
   ) |>
     filter(between(year, 1986, 2017)) |> 
-    pivot_longer(c(escp, mort), names_to = "var", values_to = "val") |> filter(year == 1999)
+    pivot_longer(c(escp, mort), names_to = "var", values_to = "val") |> #filter(year == 1999)
     ggplot(aes(year, val, fill = var)) + geom_col() + 
     scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
     scale_y_continuous("Willapa nat") +
@@ -437,7 +437,218 @@ library("patchwork")
 
 # fit stan
 
+Begin by refitting stan to subsets of the data filtered by year in order to gauge "as applied" forecast skill.
+
+For a 2022 forecast, made in Jan 2022, would have:
+  - smolt abund: 2021
+  - CWT rec/rel: 2020 (recoveries in 2020, from 2017 brood, 2019 release)
+  - FRAM: complete 2019, compiling 2020
+    - but (at least for WB) have 2020 and maybe prelim 2021 escapements and non-sport catch
+    
+So need to supply for targeting year y:
+  - STIPM: smolt[y-1], MS[y-2], spwn[y-2]+hvst[y-2] or spwn[y-3]+hvst[y-3]
+  - AR1: spwn[y-2]+hvst[y-2] or spwn[y-3]+hvst[y-3] 
+
+Likely need 2 separate year_max args? First for final year of obs, second for final year desired for estimation
+
 ## wrappers
+
+```{r stan_data_filter}
+#trim years then declare separate intermediaries
+#lags allow for flexible OAT configurations with additional trimming
+#but can be zeroed to allow all available data
+#for a 2022 forecast in adult_pred vectors from stan
+#year_max is 2021, s.t. firmly available postseason FRAM is 2019 
+stan_data_filter <- function(
+  full, #complete dataset
+  year_min, #starting anchor year
+  year_max, #year before adult_pred, last year of adult_est
+  lag_smolt = 0, #n-extra-years trimmed from smolt abundances 
+  lag_MS = 1, #n-extra-years trimmed from release and recovery data
+  lag_spwn = 2, #n-extra-years trimmed from FRAM escapement
+  lag_hvst = 2 #n-extra-years trimmed from FRAM harvest
+  ){
+  
+  full_ymin_ymax = filter(full, between(year, year_min, year_max)) |> 
+    mutate(yr = year - min(year) + 1)
+  
+  stan_data = list(
+    y_min_max = year_min:year_max,
+    smolt = filter(full_ymin_ymax, !is.na(`Smolt Abundance`), year <= year_max - lag_smolt),
+    MS = filter(full_ymin_ymax, !is.na(Release_No), year <= year_max - lag_MS),
+    spwn = filter(full_ymin_ymax, !is.na(spwn), year <= year_max - lag_spwn),
+    hvst = filter(full_ymin_ymax, !is.na(hvst), year <= year_max - lag_hvst) |> 
+      mutate(hvst = abs(hvst)),
+    rtrn = full_ymin_ymax |> 
+      mutate(rtrn = spwn + abs(hvst)) |>
+      filter(!is.na(rtrn), year <= year_max - max(c(lag_spwn, lag_hvst)))
+  )
+  
+  return(stan_data)
+}
+
+```
+
+Note this uses `tbl_coho` for the "full" number of populations, which should generally equal the number with spwn+hvst values from FRAM. Could hard-code a numeric value after settling on a final population set (e.g., 34).
+
+Given the OAT focus on a single year of prediction, could add an AR1 specific summary extraction function to get full series of estimates or other output...
+
+```{r ar1_functions}
+stan_ar1 <- function(stan_data, n_iter = 200, n_chain = 2){
+  #note following orig naming convention where "tot" refers to "total return" = spwn + hvst, as estimated from FRAM
+  stan_fit <- stan(
+    file = 'LD_coho_forecast_AR_ind_2.stan',
+    iter = n_iter, chains = n_chain, thin = 1, seed = 222,
+    control = list(adapt_delta = 0.99, max_treedepth = 10.25),
+    data = list(
+      n_year = length(stan_data$y_min_max) + 1, #sets year of adult_pred and year-dim of adult_est 
+      n_pop = length(unique(tbl_coho$pop_id)), #number of populations in full dataset (should generally equal n_pop_tot with)
+      n_pop_tot = length(unique(stan_data$rtrn$pop_id)), #Number of populations with return data
+      pop_tot = unique(stan_data$rtrn$pop_id), #Which populations possess return data
+      n_tot = length(stan_data$rtrn$rtrn), #Length of the return data vectors
+      tot_dat = stan_data$rtrn$rtrn,  #Vectors of all return data across all populations
+      tot_true = stan_data$rtrn$yr, #Vectors of the indices identifying which years are those with non-NA data for the return data
+      #Paired vectors of slice points indicating the beginning, and end of the data for a particular population
+      slice_tot_start = stan_data$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_tot_end = stan_data$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
+    )
+  )
+  
+  return(stan_fit)
+}
+
+```
+
+Could get `stream_dist` from LU or sf_coord? Other fixed values here? As above, could avoid call to global `tbl_coho` for n_pop
+
+```{r stipm_functions}
+stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
+  #note n_year does not include "+1" of AR1 since adult_pred is calc'd separately as
+  # smolt[n_year]*surv[n_year], thereby giving adult run size (spwn+hvst) in n_year+1
+  stan_fit <- stan(
+    file = 'LD_coho_forecast_6_2_4.stan', 
+    iter = n_iter, chains = n_chain, thin = 1, seed = 222,
+    control = list(adapt_delta = 0.99, max_treedepth = 10.25),
+    data = list(
+      n_year = length(stan_data$y_min_max), 
+      n_pop = length(unique(tbl_coho$pop_id)), #number of populations in full dataset
+      u = matrix(1, nrow = 1, ncol = length(unique(stan_data$spwn$pop_id))),
+      dist = units::drop_units(sf::st_distance(sf_coord)/10000), #values are identical
+      
+      pop_smolt = unique(stan_data$smolt$pop_id), #pop_ids with smolt data 
+      n_pop_smolt = length(unique(stan_data$smolt$pop_id)),
+      smolt_true = stan_data$smolt$yr,
+      smolt_dat = stan_data$smolt$`Smolt Abundance`,
+      n_smolt = nrow(stan_data$smolt),
+      
+      pop_esc = unique(stan_data$spwn$pop_id),  # pop_ids with escapement data
+      n_pop_esc = length(unique(stan_data$spwn$pop_id)),
+      esc_true = stan_data$spwn$yr,
+      esc_dat = stan_data$spwn$spwn,
+      n_esc = nrow(stan_data$spwn),
+      
+      pop_catch = unique(stan_data$hvst$pop_id), #pop_ids with harvest data
+      n_pop_catch = length(unique(stan_data$hvst$pop_id)),
+      harvest_true = stan_data$hvst$yr,
+      harvest_dat = stan_data$hvst$hvst,
+      n_harvest = nrow(stan_data$hvst),
+      
+      pop_MS = unique(stan_data$MS$pop_id), #pop_ids with marine survival data
+      n_pop_MS = length(unique(stan_data$MS$pop_id)),
+      MS_true = stan_data$MS$yr, #orig uses Fishery_Plus_Escapement rather than Release_No to filter...
+      MS_dat_x = stan_data$MS$Fishery_Plus_Escapement |> round(), #stan expects integer...
+      MS_dat_N = stan_data$MS$Release_No,
+      n_MS = nrow(stan_data$MS),
+      
+      stream_dist = stan_data$spwn |> distinct(pop, KM) |> pluck("KM"),
+      
+      sigma_esc = 0.2,
+      
+      n_hatchery = filter(stan_data$MS, hat == 1) |> distinct(pop_id) |> nrow(),
+      hatchery = distinct(stan_data$MS, pop_id, pop, hat) |> 
+        mutate(hat_id = if_else(hat > 0, row_number(), NA_integer_)) |> 
+        filter(!is.na(hat_id)) |> pluck("hat_id"),
+      wild = distinct(stan_data$MS, pop_id, pop, hat) |> 
+        mutate(hat_id = if_else(hat < 1, row_number(), NA_integer_)) |> 
+        filter(!is.na(hat_id)) |> pluck("hat_id"), 
+      
+      slice_smolt_start = stan_data$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_smolt_end = stan_data$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+      
+      slice_esc_start = stan_data$spwn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_esc_end = stan_data$spwn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+      
+      slice_harvest_start = stan_data$hvst |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_harvest_end = stan_data$hvst |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+      
+      slice_MS_start = stan_data$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_MS_end = stan_data$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
+    )
+  )
+  return(stan_fit)
+}
+```
+
+```{r oat}
+p <- c(0.1, 0.5, 0.9)
+lu <- tbl_coho |> distinct(pop_id, pop)
+oat_year_min <- 1998
+oat_years_max <- 2009:2019
+
+oat <- set_names(c(2014)) |> 
+  map(function(x) {
+    print(x)
+    stan_data_list <- stan_data_filter(tbl_coho, year_min = oat_year_min, year_max = x)
+    print(stan_data_list$y_min_max)
+    print(range(stan_data_list$smolt$year))
+    print(range(stan_data_list$MS$year))
+    print(range(stan_data_list$spwn$year))
+
+    # fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
+    # fit_ar1_pred <- summary(fit_ar1, pars = "adult_pred", probs = p)$summary |> 
+    #   as.data.frame() |> rownames_to_column("stan_out") |> tibble() |> 
+    #   mutate(
+    #     var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+    #     pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
+    #     year = last(stan_data_list$y_min_max) + 1 #should be x+1
+    #   ) |> 
+    #   left_join(lu, by = "pop_id")
+    
+    fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
+    fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred", probs = p)$summary |> 
+      as.data.frame() |> rownames_to_column("stan_out") |> tibble() |> 
+      mutate(
+        var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+        pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
+        year = last(stan_data_list$y_min_max) + 1 #should be x+1
+      ) |> 
+      left_join(lu, by = "pop_id")
+    
+    return(fit_stipm_pred)
+  })
+
+
+
+left_join(
+bind_rows(oat)
+,
+tbl_coho |> mutate(rtrn = spwn + abs(hvst)) |> select(year, pop_id, rtrn)
+,
+by = c("year", "pop_id")
+) |> 
+  select(year, pop_id, pop, rtrn, `10%`:`90%`) |> 
+  mutate(
+    ae = abs(`50%` - rtrn),
+    ae_log = abs(log(`50%`) - log(rtrn))
+  ) |> 
+  filter(pop_id == 36)
+
+
+```
+
+
+# Can delete soon
+
 
 ```{r wrapper_stan_stipm}
 stan_stipm <- function(full, year_min, year_max, n_iter = 200, n_chain = 2){
@@ -568,7 +779,13 @@ stan_ar1 <- function(full, year_min, year_max, n_iter = 200, n_chain = 2){
 }
 ```
 
-With current filtering with `year_min` argument > min year in `tbl_coho` full dataset, the `yr` indexing is reset to `year_min`, hence the additional argument here.
+Filtering with the `year_min` argument requires resetting the `yr` indexing, which in turn requires that `year_min` is also passed to summary function to properly back convert to year.
+
+ - STIPM: 
+  - adult_est is spawning escapement of (return) year, through n_year
+  - adult_pred is smolt[n_year]*surv[n_year] for adult run size (spwn+hvst) n_year+1
+ - AR1:
+  - adult_est and adult_pred are run size (spwn+hvst)
 
 ```{r fit_smry_function}
 #TB suggest appending "adult_pred" as the next year "forecast" in STIPM..?
@@ -612,36 +829,18 @@ fit_smry <- function(
 # tbl_coho <- filter(tbl_coho, !str_detect(pop, "Gamble|7-7A"))
 # sf_coord <- filter(sf_coord, !str_detect(pop, "Gamble|7-7A")) 
 
-Sys.time()
+Sys.time() #19:50
 fit_stipm_86_17 <- stan_stipm(full = tbl_coho, year_min = 1986, year_max = 2017, n_iter = 2000, n_chain = 4)
 fit_stipm_86_17_smry <- fit_smry(fit_stipm_86_17, year_min = 1986)
-Sys.time()
+Sys.time() #22:15
+
+Sys.time() #22:15
+fit_stipm_98_17 <- stan_stipm(full = tbl_coho, year_min = 1998, year_max = 2017, n_iter = 2000, n_chain = 4)
+fit_stipm_98_17_smry <- fit_smry(fit_stipm_98_17, year_min = 1998)
+Sys.time() #23:55
 
 fit_ar1_86_17 <- stan_ar1(full = tbl_coho, year_min = 1986, year_max = 2017)
 fit_ar1_86_17_smry <- fit_smry(fit_ar1_86_17, year_min = 1986)
-
-#currently incommensurate - AR1 returning spwn+hvst, STIPM just spwn...
-bind_rows(
-  fit_stipm_86_17_smry$adult_est |> mutate(fit = "stipm")
-  ,
-  fit_ar1_86_17_smry$adult_est |> mutate(fit = "ar1")
-) |> 
-  filter(pop_id == 36) |> 
-  ggplot(aes(x = year, fill = fit, color = fit)) +
-  scale_y_continuous("Estimated val", labels = scales::comma) +
-  scale_fill_brewer(type = "qual", aesthetics = c("fill", "color") ) +
-  geom_ribbon(aes(ymin = `10%`, ymax = `90%`), alpha = 0.2) + 
-  geom_line(aes(y = `50%`)) +
-  geom_point(
-    data = tbl_coho |> mutate(fit = "obs") |> filter(pop_id == 36) |> select(fit, year, pop, pop_id, spwn),
-    aes(y = spwn),
-    inherit.aes = T) +
-  facet_wrap(~pop)
-
-Sys.time()
-fit_stipm_98_17 <- stan_stipm(full = tbl_coho, year_min = 1998, year_max = 2017, n_iter = 2000, n_chain = 4)
-fit_stipm_98_17_smry <- fit_smry(fit_stipm_98_17, year_min = 1998)
-Sys.time()
 
 fit_ar1_98_17 <- stan_ar1(full = tbl_coho, year_min = 1998, year_max = 2017)
 fit_ar1_98_17_smry <- fit_smry(fit_ar1_98_17, year_min = 1998)
@@ -662,35 +861,79 @@ bind_rows(
     inherit.aes = T) +
   facet_wrap(~pop)
 
+# #currently incommensurate - AR1 returning spwn+hvst, STIPM just spwn...
+# bind_rows(
+#   fit_stipm_86_17_smry$adult_est |> mutate(fit = "stipm")
+#   ,
+#   fit_ar1_86_17_smry$adult_est |> mutate(fit = "ar1")
+# ) |> 
+#   filter(pop_id == 36) |> 
+#   ggplot(aes(x = year, fill = fit, color = fit)) +
+#   scale_y_continuous("Estimated val", labels = scales::comma) +
+#   scale_fill_brewer(type = "qual", aesthetics = c("fill", "color") ) +
+#   geom_ribbon(aes(ymin = `10%`, ymax = `90%`), alpha = 0.2) + 
+#   geom_line(aes(y = `50%`)) +
+#   geom_point(
+#     data = tbl_coho |> mutate(fit = "obs") |> filter(pop_id == 36) |> select(fit, year, pop, pop_id, spwn),
+#     aes(y = spwn),
+#     inherit.aes = T) +
+#   facet_wrap(~pop)
+
+bind_rows(
+  # fit_ar1_86_17_smry$adult_est |> mutate(fit = "1986"),
+  # fit_ar1_98_17_smry$adult_est |> mutate(fit = "1998")
+  fit_stipm_86_17_smry$adult_est |> mutate(fit = "1986"),
+  fit_stipm_98_17_smry$adult_est |> mutate(fit = "1998")
+  ) |>
+  filter(between(year, 1998, 2017)) |> 
+  select(fit, year, pop_id, pop, med = `50%`) |> 
+  left_join(
+    #tbl_coho |> mutate(obs_rtrn = spwn+hvst) |> select(year, pop_id, pop, obs_rtrn),
+    tbl_coho |> mutate(obs_spwn = spwn) |> select(year, pop_id, pop, obs_spwn),
+    by = c("year", "pop_id", "pop")
+  ) |> 
+  mutate(
+    #ae = abs(med - obs_rtrn)
+    ae = abs(log(med) - log(obs_spwn))
+    ) |> 
+  group_by(fit, pop_id, pop) |> 
+  summarise(across(starts_with("ae"), ~mean(.)), .groups = "drop") |> 
+  #pivot_wider(names_from = fit, values_from = ae) |> print(n = 100)
+  group_by(fit) |> summarise(across(starts_with("ae"), list(med = ~median(., na.rm = T), sd = ~sd(., na.rm = T))), .groups = "drop")
+
+
+fit_ar1_86_17_smry$adult_est |> filter(pop_id == 36, year == 2018)
+fit_ar1_86_17_smry$adult_pred |> filter(pop_id == 36) #same, 2018
+fit_stipm_86_17_smry$adult_pred |> filter(pop_id == 36) #also 2018?
+tbl_coho |> filter(pop_id == 36, year > 2009)
+
 
 ```
 
 ## stretch OAT
 
-Moving ahead with brute-force pattern of refitting stan to year-range-filtered lists of the relevant data.
-
-Could break out the pre-stan dataset list creation so that only the actual stan call is getting mapped. Assuming relatively little change to the population set, this `data = list()` still has substantial inefficiency in repeated wrangling calls. However these are very fast and preserve greatest flexibility to gain/lose pops across years.
-
-Need to confirm desired year lag in the data being fed: n, n-1, n-2, ...?
-
-Likely need 2 separate year_max args? First for final year of obs, second for final year desired for estimation
-
 ```{r revised_stretching_ar1}
 oat_year_min <- 1998
 oat_years_max <- 2009:2019
 
-#want to do as a walk() or for() with in-loop dump outs?
+#want to do as a walk() or for() with in-loop dump outs? warnings/diagnostics carried through in returned object?
 #any way to reduce the memory claim? looks like AR1 is ~3-5min/yr for 1K4
-Sys.time()
-stretch_ar1 <- set_names(oat_years_max) |> 
-  map(~stan_ar1(full = tbl_coho, year_min = oat_year_min, .x, n_iter = 1000, n_chain = 4))
-Sys.time()
+Sys.time() #18:12
+oat_ar1 <- set_names(oat_years_max) |> 
+  map(function(x) {
+    print(x)
+    fit <- stan_ar1(full = tbl_coho, year_min = oat_year_min, year_max = x, n_iter = 1000, n_chain = 4)
+    return(fit)
+    })
+Sys.time() #18:55
+
+oat_ar1_smry <- oat_ar1 |> #781mb to 1.4mb
+  map(.f = fit_smry, year_min = oat_year_min)
+
 
 ```
 
 
-
-# Can delete soon
 
 Here we declare a few intermediates to reduce repeated filter calls around different data elements (reaching the vectors with no missing data required by stan).
 
