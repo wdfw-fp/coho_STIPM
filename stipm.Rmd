@@ -26,6 +26,7 @@ theme_set(theme_light())
 f_orig <- "Coho_IPM_spatial_AR.r"
 
 fp <- list(
+  fram_file = "data/postseason_fram_spwn_hvst_ests.csv",
   coho_file = 'Coho data_3-30-20.csv',
   cwt_file = 'CWT_FRAM_Matches_complete20200303.csv',
   stream_file = 'Coho_KM_3.31.2020_2.csv'
@@ -38,11 +39,9 @@ fp <- list(
 
 #can convert to csv etc. as needed
 #may drop orig 10 and 24 from xlsx and reindex? and then drop filter...
-pop_meta <- readxl::read_excel("stipm_pops.xlsx") |>
-  select(pop_id:hat, starts_with("FRAM_")) |>
-  filter(FRAM_StockID != 13, FRAM_StockID != 43)
-
-temp <- read_csv("data/postseason_fram_spwn_hvst_ests.csv")
+pop_meta <- readxl::read_excel("pop_meta.xlsx") |>
+  select(pop_id:hat) |>
+  filter(StockID != 13, StockID != 43)
 
 # maybe_drop_popids <- c(
 # #these should probably go...
@@ -183,9 +182,7 @@ write_csv(fram, "data/postseason_fram_spwn_hvst_ests.csv")
 ## RMIS releases and recoveries for marine survival
 
 
-## Prior preseason forecasts?
-
-
+## full dataset
 
 ```{r tbl_coho_full}
 #moving towards deletion
@@ -262,6 +259,23 @@ sf_coord <- tbl_coho |>
 
 ```
 
+```{r updating_full_dataset}
+
+#left as reminder to recheck pop_id indexing
+identical(sort(unique(left_join(pop_meta, read_csv(fp$fram_file), by = c("StockID", "StockLongName"))$pop_id)), 1:34)
+
+coho_data_tbl <- pop_meta |> 
+  left_join(read_csv(fp$fram_file), by = c("StockID", "StockLongName")) |>
+  left_join(
+    tbl_coho |> select(pop_id, year, smolt = `Smolt Abundance`, est_n_rec = Fishery_Plus_Escapement, est_n_rel = Release_No)
+    ,
+    by = c("pop_id", "year")
+  )
+
+coho_data_tbl |> filter(StockID == 161) |> print(n = 100)
+```
+
+## Prior preseason forecasts?
 
 ## LU export
 
@@ -315,8 +329,6 @@ For a 2022 forecast, made in Jan 2022, would have:
 So need to supply for targeting year y:
   - STIPM: smolt[y-1], MS[y-2], spwn[y-2]+hvst[y-2] or spwn[y-3]+hvst[y-3]
   - AR1: spwn[y-2]+hvst[y-2] or spwn[y-3]+hvst[y-3] 
-
-Likely need 2 separate year_max args? First for final year of obs, second for final year desired for estimation
 
 ## wrappers
 
