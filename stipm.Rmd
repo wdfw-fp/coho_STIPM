@@ -284,7 +284,7 @@ coho_data_tbl <- pop_meta |> #only 34 rows but pop_id through 36
   ) |> 
   arrange(pop, year)
 
-coho_data_tbl |> distinct(pop_id, pop) |> print(n = 100)
+#coho_data_tbl |> distinct(pop_id, pop) |> print(n = 100)
 coho_data_tbl |> filter(StockID == 161) |> print(n = 100)
 
 sf_coord <- pop_meta |> 
@@ -510,9 +510,9 @@ stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
 p <- c(0.1, 0.5, 0.9)
 #lu <- tbl_coho |> distinct(pop_id, pop)
 oat_year_min <- 1998
-oat_years_max <- 2016:2018 #predicting 2017:2019
+oat_years_max <- 2012:2017 #predicting 2013:2018
 
-oat <- set_names(c(2014)) |> 
+oat <- set_names(oat_years_max) |> 
   map(function(x) {
     print(x)
     #a year_max of 2014, predicting 2015, with default lags gives FRAM/spwn through 2012
@@ -532,8 +532,10 @@ oat <- set_names(c(2014)) |>
     # print(c("spwn", range(stan_data_list$spwn$year)))
     # print(c("hvst", range(stan_data_list$hvst$year)))
     # print(c("rtrn", range(stan_data_list$rtrn$year)))
+    
+    print(Sys.time())
 
-    fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
+    fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 2000, n_chain = 4)
     fit_ar1_pred <- summary(fit_ar1, pars = "adult_pred", probs = p)$summary |>
       as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
       mutate(
@@ -543,8 +545,10 @@ oat <- set_names(c(2014)) |>
         mod = "ar1"
       ) |>
       left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
+
+    print(Sys.time())
     
-    fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
+    fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 2000, n_chain = 4)
     fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred", probs = p)$summary |>
       as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
       mutate(
@@ -559,22 +563,102 @@ oat <- set_names(c(2014)) |>
 
   })
 
+saveRDS(oat, "test_oat.rds")
+#about 10m/AR1 @2Kx4
+#about 1h/STIPM @2Kx4
+```
 
 
-left_join(
-  bind_rows(oat)
-  ,
-  coho_data_tbl |> select(year, pop_id, rtrn)
-  ,
+```{r oat_checks}
+# oat_obs <- bind_rows(
+#   bind_rows(oat) |> select(mod, year, StockID, pop_id, pop, `10%`:`90%`) |> pivot_longer(`10%`:`90%`, names_to = "pctl", values_to = "val")
+#   ,
+#   coho_data_tbl |> mutate(mod = "obs", pctl = "obs", val = rtrn) |>  select(mod, year, StockID, pop_id, pop, pctl, val)
+#   )
+
+oat <- readRDS("test_oat.rds")
+
+(
+oat_obs <- left_join(
+  bind_rows(oat),
+  coho_data_tbl |> select(year, pop_id, rtrn) |> 
+    #adding MASE denominator
+    group_by(pop_id) |> 
+    mutate(
+      scale_err = mean(abs(rtrn - c(NA, head(rtrn, -1))), na.rm = T)
+    ) |> 
+    ungroup(),
   by = c("year", "pop_id")
-) |>
-  select(mod, year, pop_id, pop, rtrn, `10%`:`90%`) |>
+  ) |>
+  select(mod, year, pop_id, pop, scale_err, rtrn, `10%`:`90%`) |>
   mutate(
-    ae = abs(`50%` - rtrn),
-    ae_log = abs(log(`50%`) - log(rtrn))
-  ) |> 
-#  filter(pop_id == 34)
-  group_by(mod) |> summarise(across(starts_with("ae"), median))
+    in_10_90 = (rtrn >= `10%`) & (rtrn <= `90%`),
+    err = rtrn - `50%`, #positive is underforecast, negative is "fewer than expected"
+    err_abs = abs(err),
+    err_log = log(rtrn) - log(`50%`),
+    err_abs_pct = err_abs / rtrn,
+    #kept as Eq26 in paper with pred-obs
+    mase = abs(`50%` - rtrn) / scale_err
+  )
+)
+
+coho_data_tbl |> filter(pop_id == 34) |> select(pop_id:StockID, year, spwn, hvst, rtrn) |> print(n = 50)
+oat_obs |> filter(pop_id == 34) |> filter(mod == "stipm")
+
+# rr <- bind_cols(
+#   readxl::read_excel("O:/code/coho/forecast_wb/2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", range = "RR!C38:C48", col_names = "year"),
+#   readxl::read_excel("O:/code/coho/forecast_wb/2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", range = "RR!E38:E48", col_names = "escp"),
+#   readxl::read_excel("O:/code/coho/forecast_wb/2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", range = "RR!U38:U48", col_names = "catch")) |> 
+#   mutate(trs = escp + catch)
+
+
+
+#all years, all pops
+oat_obs |> 
+  group_by(mod) |> 
+  summarise(
+    n = n(),
+    in_10_90_sum = sum(in_10_90),
+    in_10_90_pct = in_10_90_sum / n,
+    across(err:mase, median),
+    .groups = "drop")
+
+#all years by pop
+oat_obs |> 
+  group_by(mod, pop_id, pop) |> 
+  summarise(
+    n = n(),
+    in_10_90_sum = sum(in_10_90),
+    in_10_90_pct = in_10_90_sum / n,
+    across(err:mase, median),
+    .groups = "drop") |> 
+  filter(pop_id == 34)
+
+#values are terminal run sizes from regional workbook
+#catches do not include preterm, so escapements line up but t9$obs != stipm$rtrn 
+t9 <- readxl::read_excel("O:/code/coho/forecast_wb/table9_2020_submission.xlsx") |> 
+  mutate(
+    err = obs - mar_surv,
+    err_abs = abs(err),
+    err_log = log(obs) - log(mar_surv),
+    err_abs_pct = err_abs / obs
+  )
+
+t9 |> filter(between(year, 2013, 2018)) |> summarise(across(err:err_abs_pct, median))
+oat_obs |> arrange(mod, year) |> 
+  filter(pop_id == 34) |> select(mod, year, rtrn, `10%`:`90%`, err:err_abs_pct) |> group_by(mod) |> summarise(across(err:err_abs_pct, median))
+
+
+oat_obs |> 
+  filter(pop_id > 30) |> 
+  ggplot(aes(x = year, fill = mod, color = mod)) +
+  scale_y_continuous("Return", labels = scales::comma) +
+  wacolors::scale_fill_wa_d(aesthetics = c("fill", "color")) +
+  geom_ribbon(aes(ymin = `10%`, ymax = `90%`), alpha = 0.2) + 
+  geom_line(aes(y = `50%`)) +
+  geom_point(aes(y = rtrn), color = 1)  +
+  facet_wrap(~pop, scales = "free")
+
 
 ```
 
