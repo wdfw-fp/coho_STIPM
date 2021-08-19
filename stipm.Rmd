@@ -654,34 +654,61 @@ oat_obs <- left_join(
 
 ```{r oat_obs_mase_by_lag}
 #MASE ratios by lag
-oat_obs |>
+oat_obs |> 
   select(pop_id, pop, lag_mod, year, mase) |>
   pivot_wider(names_from = lag_mod, values_from = mase) |> 
   mutate(
     l1_l2_ar1 = l1_ar1 / l2_ar1,
-    l1_l2_stipm = l1_stipm / l2_stipm
+    l1_l2_stipm = l1_stipm / l2_stipm,
+    l1_stipm_ar1 = l1_stipm / l1_ar1
   ) |> 
-  group_by(pop_id, pop) |> 
-  summarise(across(starts_with("l1_l2"), list(min = ~min(.), med = ~median(.), max = ~max(.)))) |> print(n = 50)
+  # group_by(pop_id, pop) |> 
+  # summarise(across(starts_with("l1_l2"), list(min = ~min(.), med = ~median(.), max = ~max(.)))) |> print(n = 50)
+  filter(pop_id == 34) |>
+  select(pop, year, l1_ar1, l2_ar1, l1_l2_ar1, l1_stipm, l2_stipm, l1_l2_stipm, l1_stipm_ar1) |> 
+  gt() |> 
+  fmt_number(l1_ar1:l1_stipm_ar1, decimals = 2) |> 
+  tab_spanner("AR1", l1_ar1:l1_l2_ar1) |> 
+  tab_spanner("STIPM", contains("stipm"))
+
+
 ```
 
 
-```{r}
+```{r oat_obs_l1_vs_l2_stipm}
 # #WB focus
 # coho_data_tbl |> filter(pop_id == 34) |> select(pop_id:StockID, year, spwn, hvst, rtrn) |> print(n = 50)
 # oat_obs |> filter(pop_id == 34) |> filter(str_detect(lag_mod, "stipm"))
 
-
-oat_obs |> filter(pop_id == 34) |>
-  select(lag_mod, year, rtrn:`90%`, err:mase, in_10_90) |>
+#compare lags for STIPM
+oat_obs |> 
+  select(pop_id, lag_mod, year, rtrn:`90%`, err:mase, in_10_90) |>
   filter(str_detect(lag_mod, "stipm")) |> arrange(lag_mod, year) |> 
+  filter(pop_id == 34) |>
   #gt(groupname_col = "year", rowname_col = "lag_mod")
   gt(groupname_col = "lag_mod", rowname_col = "year") |> 
+  cols_hide(pop_id) |> 
   fmt_number(rtrn:err_abs, decimals = 0) |> 
   fmt_number(err_log:mase, decimals = 2) |> 
   summary_rows(groups = TRUE, fns = list(min = ~min(.), med = ~median(.), max = ~max(.)))
-    
+```
 
+```{r oat_obs_ar1_vs_stipm_l1}
+#compare STIPM vs AR1 lag1    
+oat_obs |> 
+  select(pop_id, lag_mod, year, rtrn:`90%`, err:mase, in_10_90) |>
+  filter(str_detect(lag_mod, "l1")) |> arrange(lag_mod, year) |> 
+  filter(pop_id == 34) |>
+  #gt(groupname_col = "year", rowname_col = "lag_mod")
+  gt(groupname_col = "lag_mod", rowname_col = "year") |> 
+  cols_hide(pop_id) |> 
+  fmt_number(rtrn:err_abs, decimals = 0) |> 
+  fmt_number(err_log:mase, decimals = 2) |> 
+  summary_rows(groups = TRUE, fns = list(min = ~min(.), med = ~median(.), max = ~max(.)))
+```
+
+
+```{r}
 # rr <- bind_cols(
 #   readxl::read_excel("O:/code/coho/forecast_wb/2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", range = "RR!C38:C48", col_names = "year"),
 #   readxl::read_excel("O:/code/coho/forecast_wb/2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", range = "RR!E38:E48", col_names = "escp"),
@@ -737,7 +764,66 @@ oat_obs |>
   geom_line(aes(y = `50%`)) +
   geom_point(aes(y = rtrn), color = 1)  +
   facet_wrap(~pop+lag_mod, scales = "free")
+```
 
+
+```{r oat_obs_pred_patchwork}
+set_names(2009:2017) |> 
+  map(function(x) {
+    d <- coho_data_tbl |> filter(pop_id == 34, between(year, 1998, x)) |> select(year, pop_id, rtrn) |> mutate(year = as.character(year))
+    
+    oat_obs |> 
+      filter(pop_id == 34, str_detect(lag_mod, "l1"), year == x+1) |> mutate(year = as.character(year)) |> 
+      ggplot() +
+      geom_pointrange(aes(x = year, y = `50%`, ymin = `10%`, ymax = `90%`, color = lag_mod), fatten = 1.1, position = position_dodge(width = 0.5)) +
+      geom_point(aes(x = year, y = `50%`, color = lag_mod), position = position_dodge(width = 0.5)) +
+      geom_point(aes(x = year, y = rtrn), color = 1, shape = 2)  +
+      #geom_line(data = d, aes(x = year, y = rtrn), color = "brown") +
+      geom_point(data = d, aes(x = year, y = rtrn), color = "brown", shape = 16) +
+      geom_vline(xintercept = as.character(x-1), linetype = "dashed") +
+      scale_x_discrete(name = "", limits = as.character(1998:2018), drop = FALSE) +
+      scale_y_continuous(name = "Return", limits = c(0, 150000), labels = scales::comma) + #limits drops point error when outside ymax
+      scale_color_manual(name = "", values = c("grey", "gold"))
+}) |> patchwork::wrap_plots(ncol = 1)
+```
+
+
+```{r oat_obs_pred_gganimate}
+animate(
+  set_names(2009:2017) |> 
+    map_df(function(x) {
+      full_join(
+        coho_data_tbl |> 
+          filter(pop_id == 34, between(year, 1998, x)) |> 
+          select(year, pop_id, train = rtrn) |> 
+          mutate(year = as.character(year))
+        ,
+        oat_obs |> 
+          filter(pop_id == 34, year == x+1, str_detect(lag_mod, "l1")) |> 
+          select(year, pop_id, pop, lag_mod, rtrn:`90%`) |> 
+          mutate(year = as.character(year))
+        , 
+        by = c("pop_id", "year")
+      ) |> 
+        mutate(year_pred = x+1, year_data = as.character(x-1))
+    }) |> 
+    ggplot(aes(x = year)) +
+    geom_pointrange(aes(y = `50%`, ymin = `10%`, ymax = `90%`, color = lag_mod), position = position_dodge2(width = 0.5), size = 1.2) +
+    geom_point(aes(y = `50%`, color = lag_mod), position = position_dodge2(width = 0.5), size = 1.5) +
+    geom_point(aes(y = rtrn), color = "tan", shape = 15, size = 4)  +
+    #  geom_point(aes(y = train), color = "brown", shape = 16) +
+    geom_col(aes(y = train), color = "tan", fill = "tan", width = 0.3, alpha = 0.7) +
+   # geom_vline(aes(xintercept = year_data), linetype = "dashed") +
+    scale_x_discrete(name = "", limits = as.character(1998:2018), drop = FALSE, guide = guide_axis(n.dodge = 2)) +
+    scale_y_continuous(name = "Return", limits = c(0, 130000), labels = scales::comma) + #limits drops point error when outside ymax
+    scale_color_manual(name = "", values = c("grey", "gold"), na.translate = FALSE) + 
+    theme(legend.position = "top") +
+    transition_states(year_pred, 3, 1) #+ shadow_mark(alpha = 0.4)
+  ,
+  width = 7, height = 5, units = "in", res = 100
+  )
+
+anim_save("oat_l1_anim.gif")
 
 ```
 
