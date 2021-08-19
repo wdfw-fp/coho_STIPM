@@ -44,8 +44,8 @@ fp <- list(
 #cannot reindex here b/c still joining orig tbl_coho smolt and CWT data
 #(prefer not to, but could do joins from orig csv on pop name strings rather than numeric index...)
 pop_meta <- readxl::read_excel("pop_meta.xlsx") |>
-  select(pop_id:hat) |>
-  filter(StockID != 13, StockID != 43)
+  dplyr::select(pop_id:hat) |>
+  dplyr::filter(StockID != 13, StockID != 43)
 
 # maybe_drop_popids <- c(
 # #these should probably go...
@@ -58,6 +58,8 @@ pop_meta <- readxl::read_excel("pop_meta.xlsx") |>
 #   21, #LkWA, relevance/pop size
 #   23 #Nooksack, proxy not an escp est, but smolt ests
 #   )
+
+load("stipm.Rdata")
 
 ```
 
@@ -182,13 +184,15 @@ write_csv(fram, "data/postseason_fram_spwn_hvst_ests.csv")
 
 ## Smolt outmigrant estimates
 
+pending updates from ML
 
 ## RMIS releases and recoveries for marine survival
 
+pending updates from NK
 
 ## full dataset
 
-```{r tbl_coho_full}
+```{r tbl_coho_full, eval=FALSE}
 #moving towards deletion
 #still working on smolt and CWT updates
 
@@ -263,7 +267,7 @@ sf_coord <- tbl_coho |>
 
 ```
 
-```{r updating_full_dataset}
+```{r updating_full_dataset, eval=FALSE}
 #Note pop_id reindexing here
 #can/should do furthest upstream in popmeta
 
@@ -297,62 +301,28 @@ sf_coord <- pop_meta |>
 
 ```
 
-## Prior preseason forecasts?
 
-## LU export
+# model fitting
 
-Dump a file for discussion and review of included series.
+The STIPM and AR1 stan models are first repeatedly fit to progressive subsets of the data filtered by year in order to gauge "as applied" forecast skill. Rather than a "sliding window" (e.g., the prior 10 years stepped forward each year), the dataset is "stretched" from a fixed starting year. Although older observations may have less immediate relevance to current conditions, this approach allows the MCMC sampler to explore a larger parameter space for posterior distributions. Future work could compare skill with a sliding alternative to test the hypothesis that a more constrained but more recent span of years could improve prediction.
 
-```{r stipm_pops, eval=FALSE}
-# tbl_coho |> 
-#   group_by(pop_id, pop) |> 
-#   summarise(
-#     year_min = min(`Calendar Year`),
-#     year_max = max(`Calendar Year`),
-#     nobs_any = n(),
-#     across(c(spwn, hvst, `Smolt Abundance`, Release_No), ~sum(!is.na(.))),
-#     .groups = "drop"
-#   ) |> #print(n = 50)
-#   ##writexl::write_xlsx("stipm_pops_crosscheck.xlsx")
+In practice, the data available to forecast a given year return may be limited to observations from one, two or even three years prior. These lags can vary by data type and source.
 
-# #4 cases of missing KM/Lat/Long due to the orig sequence of dataset construction
-# #where a few additional records are added after joining stream lengths
-# #but expect to drop 7/7A and Pt Gamble anyway
-# #also following orig approach on "median" of Lat/Long, though already uniform 
-# #manually copied into working xlsx, leaving pop_id/pops to confirm matches before deleting
-# tbl_coho |> 
-#   filter(!is.na(KM)) |>
-#   group_by(pop_id, pop) |> 
-#   summarise(across(c(Longitude, Latitude, KM), median), .groups = "drop") |> 
-#   write.table("clipboard", row.names = F)
-
-# # add CWT marine survival info
-# tbl_coho |> 
-#   distinct(pop_id, pop,`Smolt Ocean Survival Population`, hat) |> 
-#   filter(!is.na(hat)) |> 
-#   select(pop_id, `Smolt Ocean Survival Population`, hat) |> 
-#   right_join(tibble(pop_id = 1:36), by = "pop_id") |> arrange(pop_id) |> 
-#   write.table("clipboard", row.names = F, na = "")
-  
-
-```
-
-
-# fit stan
-
-Begin by refitting stan to subsets of the data filtered by year in order to gauge "as applied" forecast skill.
-
-For a 2022 forecast, made in Jan 2022, would have:
-  - smolt abund: 2021
-  - CWT rec/rel: 2020 (recoveries in 2020, from 2017 brood, 2019 release)
-  - FRAM: complete 2019, compiling 2020
-    - but (at least for WB) have 2020 and maybe prelim 2021 escapements and non-sport catch
+For example, a 2022 preseason forecast, made in January of 2022, would mostly likely have available:
+  - Smolt outmigrant abundances from 2021
+  - CWT recoveries & releases (informing marine survival) from 2020; from 2017 brood, released in 2019 with recoveries in 2020
+  - FRAM-based estimates of harvest and escapement (informing annual total return) from 2019 or 2020
+    - 2019 values are complete from the previous preseason planning process
+    - 2020 estimates exist and are being compiled for Jan/Feb CoTC post-season runs
+    - preliminary 2021 escapement estimates may be available, but will still be in review and undergoing regional QAQC
     
-So need to supply for targeting year y:
-  - STIPM: smolt[y-1], MS[y-2], spwn[y-2]+hvst[y-2] or spwn[y-3]+hvst[y-3]
-  - AR1: spwn[y-2]+hvst[y-2] or spwn[y-3]+hvst[y-3] 
+Accordingly, the process here examines 2 likely dataset scenarios for a forecast targeting year $y$:
+  - STIPM: $smolt_{y-1}$, $MS_{y-2}$, $spwn_{y-2}, hvst_{y-2}$ or $spwn_{y-3}, hvst_{y-3}$
+  - AR1: $spwn_{y-2}, hvst_{y-2}$ or $spwn_{y-3}, hvst_{y-3}$
 
-## wrappers
+## stan functions
+
+A helper function trims years from the complete dataset according to arguments controlling the data-type-specific lag from a data `year_max` corresponding to the year before the desired forecast year (i.e., a `year_max` of 2021 designates the most recent possible data for the 2022 forecast). 
 
 ```{r stan_data_filter}
 #trim years then declare separate intermediaries
@@ -401,9 +371,9 @@ stan_data_filter <- function(
 
 ```
 
-Note this uses `tbl_coho` for the "full" number of populations, which should generally equal the number with spwn+hvst values from FRAM. Could hard-code a numeric value after settling on a final population set (e.g., 34).
+**Note this uses `tbl_coho` for the "full" number of populations, which should generally equal the number with spwn+hvst values from FRAM. Could hard-code a numeric value after settling on a final population set (e.g., 34).**
 
-Given the OAT focus on a single year of prediction, could add an AR1 specific summary extraction function to get full series of estimates or other output...
+Next, wrappers to the `rstan::stan` function facilitate repeated fitting with consistent control parameters and input data lists.
 
 ```{r ar1_functions}
 stan_ar1 <- function(stan_data, n_iter = 200, n_chain = 2){
@@ -432,7 +402,7 @@ stan_ar1 <- function(stan_data, n_iter = 200, n_chain = 2){
 
 ```
 
-Could get `stream_dist` from LU or sf_coord? Other fixed values here? As above, could avoid call to global `tbl_coho` for n_pop
+**Could get `stream_dist` from LU or sf_coord? Other fixed values here? As above, could avoid call to global `tbl_coho` for n_pop**
 
 ```{r stipm_functions}
 stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
@@ -509,7 +479,11 @@ stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
 
 ## oat
 
-```{r oat}
+
+```{r oat, eval=FALSE}
+#verbose/redundant chunk, but explicit _lag2 and _lag1 for certainty/clarity
+#intermediary single year output is saved out within map() in case of loop disruptions
+
 p <- c(0.1, 0.5, 0.9)
 #lu <- tbl_coho |> distinct(pop_id, pop)
 iter <- 3000
@@ -621,24 +595,36 @@ saveRDS(oat, "oat_fits/oat_l2_l1_2010_2018.rds")
 ```
 
 
-```{r oat_checks}
-# oat_obs <- bind_rows(
-#   bind_rows(oat) |> select(mod, year, StockID, pop_id, pop, `10%`:`90%`) |> pivot_longer(`10%`:`90%`, names_to = "pctl", values_to = "val")
-#   ,
-#   coho_data_tbl |> mutate(mod = "obs", pctl = "obs", val = rtrn) |>  select(mod, year, StockID, pop_id, pop, pctl, val)
-#   )
+```{r oat_rhat_neff}
+# oat |> 
+#   group_by(lag_mod, pop_id, pop) |> 
+#   summarise(Rhat_max = max(Rhat), n_eff_min = min(n_eff), .groups = "drop") |> 
+#   pivot_wider(names_from = lag_mod, values_from = c(Rhat_max, n_eff_min)) |>
+#   select(pop_id, pop, starts_with("Rhat"), starts_with("n_eff")) |> print(n = 40)
 
-oat <- readRDS("oat_fits/oat_l2_l1_2010_2018.rds") |> 
-  unite("lag_mod", lag, mod)
+# #all years
+# oat |> 
+#   select(year, lag_mod, pop_id, pop, Rhat, n_eff) |> 
+#   filter(pop_id == 34) |> 
+#   #pivot_longer(-c(year, lag_mod, pop_id, pop), names_to = "var", values_to = "val") |> 
+#   gt::gt(groupname_col = "year", rowname_col = "lag_mod") |> 
+#   gt::cols_hide(c("pop_id", "pop")) |> 
+#   gt::tab_header(title = "One-ahead Rhat and effective draws", subtitle = "Willapa Bay Natural") |> 
+#   gt::fmt_number(Rhat, decimals = 2) |> gt::fmt_number(n_eff, decimals = 0)
 
-#diagnostics
-oat |> 
-  group_by(lag_mod, pop_id, pop) |> 
-  summarise(Rhat_max = max(Rhat), n_eff_min = min(n_eff), .groups = "drop") |> 
-  pivot_wider(names_from = lag_mod, values_from = c(Rhat_max, n_eff_min)) |> 
-  select(pop_id, pop, starts_with("Rhat"), starts_with("n_eff")) |> print(n = 40)
-  
+#max/min
+oat |>
+  group_by(lag_mod, pop_id, pop) |>
+  summarise(Rhat_max = max(Rhat), n_eff_min = min(n_eff), .groups = "drop") |>
+  filter(pop_id == 34) |> 
+  gt::gt(rowname_col = "lag_mod") |> 
+  gt::cols_hide(c("pop_id", "pop")) |> 
+  gt::tab_header(title = "One-ahead Rhat and effective draws", subtitle = "Willapa Bay Natural") |> 
+  gt::fmt_number(Rhat_max, decimals = 2) |> gt::fmt_number(n_eff_min, decimals = 0)
 
+```
+
+```{r oat_obs, eval=FALSE}
 (
 oat_obs <- left_join(
   oat,
@@ -663,7 +649,10 @@ oat_obs <- left_join(
     mase = abs(`50%` - rtrn) / scale_err
   )
 )
+```
 
+
+```{r oat_obs_mase_by_lag}
 #MASE ratios by lag
 oat_obs |>
   select(pop_id, pop, lag_mod, year, mase) |>
@@ -674,13 +663,13 @@ oat_obs |>
   ) |> 
   group_by(pop_id, pop) |> 
   summarise(across(starts_with("l1_l2"), list(min = ~min(.), med = ~median(.), max = ~max(.)))) |> print(n = 50)
+```
 
 
-
-
-#WB focus
-coho_data_tbl |> filter(pop_id == 34) |> select(pop_id:StockID, year, spwn, hvst, rtrn) |> print(n = 50)
-oat_obs |> filter(pop_id == 34) |> filter(str_detect(lag_mod, "stipm"))
+```{r}
+# #WB focus
+# coho_data_tbl |> filter(pop_id == 34) |> select(pop_id:StockID, year, spwn, hvst, rtrn) |> print(n = 50)
+# oat_obs |> filter(pop_id == 34) |> filter(str_detect(lag_mod, "stipm"))
 
 
 oat_obs |> filter(pop_id == 34) |>
@@ -703,7 +692,7 @@ oat_obs |> filter(pop_id == 34) |>
 
 #all years, all pops
 oat_obs |> 
-  group_by(mod) |> 
+  group_by(lag_mod) |> 
   summarise(
     n = n(),
     in_10_90_sum = sum(in_10_90),
@@ -713,7 +702,7 @@ oat_obs |>
 
 #all years by pop
 oat_obs |> 
-  group_by(mod, pop_id, pop) |> 
+  group_by(lag_mod, pop_id, pop) |> 
   summarise(
     n = n(),
     in_10_90_sum = sum(in_10_90),
@@ -722,37 +711,75 @@ oat_obs |>
     .groups = "drop") |> 
   filter(pop_id == 34)
 
-#values are terminal run sizes from regional workbook
-#catches do not include preterm, so escapements line up but t9$obs != stipm$rtrn 
-t9 <- readxl::read_excel("O:/code/coho/forecast_wb/table9_2020_submission.xlsx") |> 
-  mutate(
-    err = obs - mar_surv,
-    err_abs = abs(err),
-    err_log = log(obs) - log(mar_surv),
-    err_abs_pct = err_abs / obs
-  )
+# #values are terminal run sizes from regional workbook
+# #catches do not include preterm, so escapements line up but t9$obs != stipm$rtrn 
+# t9 <- readxl::read_excel("O:/code/coho/forecast_wb/table9_2020_submission.xlsx") |> 
+#   mutate(
+#     err = obs - mar_surv,
+#     err_abs = abs(err),
+#     err_log = log(obs) - log(mar_surv),
+#     err_abs_pct = err_abs / obs
+#   )
+# 
+# t9 |> filter(between(year, 2013, 2018)) |> summarise(across(err:err_abs_pct, median))
+# oat_obs |> arrange(mod, year) |> 
+#   filter(pop_id == 34) |> select(mod, year, rtrn, `10%`:`90%`, err:err_abs_pct) |> group_by(mod) |> summarise(across(err:err_abs_pct, median))
 
-t9 |> filter(between(year, 2013, 2018)) |> summarise(across(err:err_abs_pct, median))
-oat_obs |> arrange(mod, year) |> 
-  filter(pop_id == 34) |> select(mod, year, rtrn, `10%`:`90%`, err:err_abs_pct) |> group_by(mod) |> summarise(across(err:err_abs_pct, median))
-
-
+#the large returns in 2009 & 2010 seem to predispose overforecasts in 17 & 18
+#ar1 bad but better than stipm in 2015
 oat_obs |> 
   filter(pop_id > 30) |> 
   filter(pop_id == 34) |> 
-  ggplot(aes(x = year, fill = mod, color = mod)) +
+  ggplot(aes(x = year, fill = lag_mod, color = lag_mod)) +
   scale_y_continuous("Return", labels = scales::comma) +
   wacolors::scale_fill_wa_d(aesthetics = c("fill", "color")) +
   geom_ribbon(aes(ymin = `10%`, ymax = `90%`), alpha = 0.2) + 
   geom_line(aes(y = `50%`)) +
   geom_point(aes(y = rtrn), color = 1)  +
-  facet_wrap(~pop, scales = "free")
+  facet_wrap(~pop+lag_mod, scales = "free")
 
 
 ```
 
 
 # Can delete soon
+
+## LU export
+
+Dump a file for discussion and review of included series.
+
+```{r stipm_pops, eval=FALSE}
+# tbl_coho |> 
+#   group_by(pop_id, pop) |> 
+#   summarise(
+#     year_min = min(`Calendar Year`),
+#     year_max = max(`Calendar Year`),
+#     nobs_any = n(),
+#     across(c(spwn, hvst, `Smolt Abundance`, Release_No), ~sum(!is.na(.))),
+#     .groups = "drop"
+#   ) |> #print(n = 50)
+#   ##writexl::write_xlsx("stipm_pops_crosscheck.xlsx")
+
+# #4 cases of missing KM/Lat/Long due to the orig sequence of dataset construction
+# #where a few additional records are added after joining stream lengths
+# #but expect to drop 7/7A and Pt Gamble anyway
+# #also following orig approach on "median" of Lat/Long, though already uniform 
+# #manually copied into working xlsx, leaving pop_id/pops to confirm matches before deleting
+# tbl_coho |> 
+#   filter(!is.na(KM)) |>
+#   group_by(pop_id, pop) |> 
+#   summarise(across(c(Longitude, Latitude, KM), median), .groups = "drop") |> 
+#   write.table("clipboard", row.names = F)
+
+# # add CWT marine survival info
+# tbl_coho |> 
+#   distinct(pop_id, pop,`Smolt Ocean Survival Population`, hat) |> 
+#   filter(!is.na(hat)) |> 
+#   select(pop_id, `Smolt Ocean Survival Population`, hat) |> 
+#   right_join(tibble(pop_id = 1:36), by = "pop_id") |> arrange(pop_id) |> 
+#   write.table("clipboard", row.names = F, na = "")
+
+```
 
 ```{r try_tidybayes, eval=FALSE}
 #could further examine library(tidybayes)? and/or library(bayesplot)?
@@ -764,7 +791,7 @@ fit_ar1 |>
   median_qi()
 ```
 
-```{r demo_stretch_allpops}
+```{r demo_stretch_allpops, eval=FALSE}
 library(slider)
 
 #stretching: before = Inf, so cumulative
@@ -798,7 +825,7 @@ foo |>
   }()
 ```
 
-```{r test_2050s}
+```{r test_2050s, eval=FALSE}
 #further into future just with larger n_year? oh yes.
 
 fit_ar1_test <- stan(
@@ -842,7 +869,4 @@ fit_ar1_test_smry$adult_est |> #tail()
   facet_wrap(~pop)
 
 ```
-
-# diagnostics and results
-
 
