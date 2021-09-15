@@ -27,7 +27,8 @@ theme_set(theme_light())
 f_orig <- "Coho_IPM_spatial_AR.r"
 
 fp <- list(
-  fram_file = "data/postseason_fram_spwn_hvst_ests.csv",
+  data_fram = "data/postseason_fram_spwn_hvst_ests.csv",
+  data_cwt = "data/rmis_cwts.csv",
   coho_file = 'Coho data_3-30-20.csv',
   cwt_file = 'CWT_FRAM_Matches_complete20200303.csv',
   stream_file = 'Coho_KM_3.31.2020_2.csv'
@@ -186,9 +187,64 @@ write_csv(fram, "data/postseason_fram_spwn_hvst_ests.csv")
 
 pending updates from ML
 
-## RMIS releases and recoveries for marine survival
+## Marine survival CWT releases and recoveries
 
-pending updates from NK
+Dataset updated by NK and TG, following RMIS release count fix.
+
+```{r cwt_rec_rel, eval=FALSE}
+# #strings match and all 15 units used in analysis are present
+# #reversing order of terms shows the 3 unused dataset units: Baker H, Minter Crk H and Satsop H
+# setdiff(
+#   filter(pop_meta, !is.na(smolt_ocn_surv_pop)) |> distinct(smolt_ocn_surv_pop),
+#   readxl::read_excel("O:/code/coho/forecast_wb/coho SARs_to extend.xlsx",
+#     sheet = "CWT_FRAM_Matches_complete202108") |>
+#     distinct(smolt_ocn_surv_pop = `Smolt Ocean Survival Population`)
+# )
+
+cwt <- readxl::read_excel(
+  "O:/code/coho/forecast_wb/coho SARs_to extend.xlsx", 
+  sheet = "CWT_FRAM_Matches_complete202108"
+  ) |> 
+  select(
+    smolt_ocn_surv_pop = `Smolt Ocean Survival Population`,
+    pop = `Managment Unit (FRAM)`,
+    year = `Calendar Year`, est_n_rec = Fishery_Plus_Escapement, est_n_rel = Release_No
+  ) |> 
+  left_join(
+    pop_meta |> mutate(pop_id = as.numeric(factor(pop))),
+    by = c("pop", "smolt_ocn_surv_pop")
+    ) |> 
+  #filter(is.na(pop_id)) |> print(n = 100)
+  #filter(str_detect(pop, "Area 13")) |> print(n = 100)
+  filter(!is.na(pop_id)) |> 
+  select(pop_id, pop, smolt_ocn_surv_pop, year, est_n_rec, est_n_rel)
+
+# #compare against prior
+# tbl_coho |> 
+#   filter(pop_id == 36, between(year, 1986, 2020)) |> 
+#   select(pop_id, pop, `Smolt Ocean Survival Population`, year, Fishery_Plus_Escapement, Release_No) |> print(n = 50)
+
+# full_join(
+#   coho_data_tbl |> select(pop_id, pop, smolt_ocn_surv_pop, year, est_n_rec, est_n_rel)
+#   ,
+#   cwt
+#   , 
+#   by = c("pop_id", "pop", "smolt_ocn_surv_pop", "year"), suffix = c("_orig", "")
+#   ) |> 
+#   #filter(pop_id == 34, between(year, 1986, 2020)) |> print(n = 50)
+#   mutate(
+#     d_rec = est_n_rec - est_n_rec_orig,
+#     d_rel = est_n_rel - est_n_rel_orig  
+#   ) |> 
+#   filter(
+#     !is.na(d_rec), !is.na(d_rel),
+#     (d_rec != 0 | d_rel != 0)) |> 
+#   select(pop_id:year, contains("_rel"), contains("_rec")) |> #print(n = 200)
+#   writexl::write_xlsx("O:/code/coho/forecast_wb/coho_SARs_to_extend_diffs.xlsx")
+
+write_csv(cwt, "data/rmis_cwts.csv")
+
+```
 
 ## full dataset
 
@@ -268,18 +324,21 @@ sf_coord <- tbl_coho |>
 ```
 
 ```{r updating_full_dataset, eval=FALSE}
-#Note pop_id reindexing here
-#can/should do furthest upstream in popmeta
+#Note pop_id reindexing to 1:34 here
+#could eventually do furthest upstream in popmeta when all datasets updated
 
 #note also the negative escapement in A12A Wild in 2005 is still an issue (from the FRAM database)
 #so spwn is coerced to 0 here, but harvest is unaffected b/c drawn directly from Mortality
-#rather than inversion of spwn via ER
+#rather than original inversion of spwn via ER
 coho_data_tbl <- pop_meta |> #only 34 rows but pop_id through 36
-  left_join(read_csv(fp$fram_file), by = c("StockID", "StockLongName")) |> #filter(spwn < 0 | hvst < 0)
+  left_join(read_csv(fp$data_fram), by = c("StockID", "StockLongName")) |> #filter(spwn < 0 | hvst < 0)
   mutate(spwn = if_else(spwn < 0, 0.01, spwn)) |> #filter(spwn < 0 | hvst < 0)
   left_join(
-    tbl_coho |> select(pop_id, year, smolt = `Smolt Abundance`, est_n_rec = Fishery_Plus_Escapement, est_n_rel = Release_No)
-    ,
+    tbl_coho |> 
+      select(
+        pop_id, year, smolt = `Smolt Abundance`
+        #, est_n_rec = Fishery_Plus_Escapement, est_n_rel = Release_No
+      ),
     by = c("pop_id", "year")
   ) |> 
   mutate(
@@ -287,6 +346,8 @@ coho_data_tbl <- pop_meta |> #only 34 rows but pop_id through 36
     #reindex
     pop_id = as.numeric(factor(pop))
   ) |> 
+  #updated CWTs already reindexed to 1:34
+  left_join(read_csv(fp$data_cwt), by = c("pop_id", "pop", "smolt_ocn_surv_pop", "year")) |>
   arrange(pop, year)
 
 #coho_data_tbl |> distinct(pop_id, pop) |> print(n = 100)
@@ -444,8 +505,8 @@ stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
       MS_true = stan_data$MS$yr, #orig uses Fishery_Plus_Escapement rather than Release_No to filter...
 #      MS_dat_x = stan_data$MS$Fishery_Plus_Escapement |> round(), #stan expects integer...
 #      MS_dat_N = stan_data$MS$Release_No,
-      MS_dat_x = stan_data$MS$est_n_rec |> round(), #stan expects integer...
-      MS_dat_N = stan_data$MS$est_n_rel,
+      MS_dat_x = stan_data$MS$est_n_rec |> round() |> as.integer(), #stan expects integer...
+      MS_dat_N = stan_data$MS$est_n_rel |> round() |> as.integer(),
       n_MS = nrow(stan_data$MS),
       
       stream_dist = stan_data$spwn |> distinct(pop, hab_km) |> pluck("hab_km"),
@@ -478,7 +539,6 @@ stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
 ```
 
 ## oat
-
 
 ```{r oat, eval=FALSE}
 #verbose/redundant chunk, but explicit _lag2 and _lag1 for certainty/clarity
@@ -651,7 +711,6 @@ oat_obs <- left_join(
 )
 ```
 
-
 ```{r oat_obs_mase_by_lag}
 #MASE ratios by lag
 oat_obs |> 
@@ -673,7 +732,6 @@ oat_obs |>
 
 
 ```
-
 
 ```{r oat_obs_l1_vs_l2_stipm}
 # #WB focus
@@ -787,7 +845,6 @@ set_names(2009:2017) |>
 }) |> patchwork::wrap_plots(ncol = 1)
 ```
 
-
 ```{r oat_obs_pred_gganimate}
 animate(
   set_names(2009:2017) |> 
@@ -826,6 +883,58 @@ animate(
 anim_save("oat_l1_anim.gif")
 
 ```
+
+## full dataset
+
+```{r}
+iter <- 200
+chain <- 2
+year_min <- 1998
+year_max <- 2018
+
+stan_data_list <- stan_data_filter(coho_data_tbl, year_min = year_min, year_max = year_max, lag_spwn = 1, lag_hvst = 1) 
+
+print(stan_data_list$y_min_max)
+print(c("smolt", range(stan_data_list$smolt$year)))
+print(c("MS", range(stan_data_list$MS$year)))
+print(c("spwn", range(stan_data_list$spwn$year)))
+print(c("hvst", range(stan_data_list$hvst$year)))
+print(c("rtrn", range(stan_data_list$rtrn$year)))
+
+fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
+#can just drop the 'probs = p' arg to get 2.5% to 97.5% posterior intervals
+#divergent transitions:
+get_sampler_params(fit_ar1, inc_warmup = FALSE) |> 
+  map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+
+# fit_ar1_pred <- summary(fit_ar1, pars = "adult_pred", probs = p)$summary |>
+#   as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+#   mutate(
+#     var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+#     pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
+#     year = last(stan_data_list$y_min_max) + 1, #should be x+1
+#     mod = "ar1"
+#   ) |>
+#   left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
+
+fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
+
+get_sampler_params(fit_stipm, inc_warmup = FALSE) |> 
+  map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+
+# fit_stipm_pred <- 
+summary(fit_stipm, pars = "adult_pred")$summary |>
+  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+  mutate(
+    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+    pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
+    year = last(stan_data_list$y_min_max) + 1, #should be x+1
+    mod = "stipm"
+  ) |>
+  left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
+
+```
+
 
 
 # Can delete soon
