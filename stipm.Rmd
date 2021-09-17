@@ -508,8 +508,6 @@ stan_data_filter <- function(
 
 ```
 
-**Note this uses `tbl_coho` for the "full" number of populations, which should generally equal the number with spwn+hvst values from FRAM. Could hard-code a numeric value after settling on a final population set (e.g., 34).**
-
 Next, wrappers to the `rstan::stan` function facilitate repeated fitting with consistent control parameters and input data lists.
 
 ```{r ar1_functions}
@@ -521,7 +519,6 @@ stan_ar1 <- function(stan_data, n_iter = 200, n_chain = 2){
     control = list(adapt_delta = 0.99, max_treedepth = 10.25),
     data = list(
       n_year = length(stan_data$y_min_max) + 1, #sets year of adult_pred and year-dim of adult_est 
-#n_pop = length(unique(tbl_coho$pop_id)), #number of populations in full dataset (should generally equal n_pop_tot with)
       n_pop = length(unique(coho_data_tbl$pop_id)), #number of populations in full dataset
       n_pop_tot = length(unique(stan_data$rtrn$pop_id)), #Number of populations with return data
       pop_tot = unique(stan_data$rtrn$pop_id), #Which populations possess return data
@@ -552,7 +549,6 @@ stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
     control = list(adapt_delta = 0.99, max_treedepth = 10.25),
     data = list(
       n_year = length(stan_data$y_min_max), 
-#n_pop = length(unique(tbl_coho$pop_id)), #number of populations in full dataset (should generally equal n_pop_tot with)
       n_pop = length(unique(coho_data_tbl$pop_id)), #number of populations in full dataset
       u = matrix(1, nrow = 1, ncol = length(unique(stan_data$spwn$pop_id))),
       dist = units::drop_units(sf::st_distance(sf_coord)/10000), #values are identical
@@ -560,7 +556,6 @@ stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
       pop_smolt = unique(stan_data$smolt$pop_id), #pop_ids with smolt data 
       n_pop_smolt = length(unique(stan_data$smolt$pop_id)),
       smolt_true = stan_data$smolt$yr,
-#      smolt_dat = stan_data$smolt$`Smolt Abundance`,
       smolt_dat = stan_data$smolt$smolt,
       n_smolt = nrow(stan_data$smolt),
       
@@ -579,10 +574,8 @@ stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
       pop_MS = unique(stan_data$MS$pop_id), #pop_ids with marine survival data
       n_pop_MS = length(unique(stan_data$MS$pop_id)),
       MS_true = stan_data$MS$yr, #orig uses Fishery_Plus_Escapement rather than Release_No to filter...
-#      MS_dat_x = stan_data$MS$Fishery_Plus_Escapement |> round(), #stan expects integer...
-#      MS_dat_N = stan_data$MS$Release_No,
-      MS_dat_x = stan_data$MS$est_n_rec |> round() |> as.integer(), #stan expects integer...
-      MS_dat_N = stan_data$MS$est_n_rel |> round() |> as.integer(),
+      MS_dat_x = stan_data$MS$est_n_rec |> round() |> as.integer(), #stan expects integer; previously labeled Fishery_Plus_Escapement
+      MS_dat_N = stan_data$MS$est_n_rel |> round() |> as.integer(), #previously labeled Release_No
       n_MS = nrow(stan_data$MS),
       
       stream_dist = stan_data$spwn |> distinct(pop, hab_km) |> pluck("hab_km"),
@@ -620,113 +613,79 @@ stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
 #verbose/redundant chunk, but explicit _lag2 and _lag1 for certainty/clarity
 #intermediary single year output is saved out within map() in case of loop disruptions
 
-p <- c(0.1, 0.5, 0.9)
-#lu <- tbl_coho |> distinct(pop_id, pop)
-iter <- 3000
-chain <- 4
-oat_year_min <- 1998
-oat_years_max <- 2009:2017 #predicting 2010:2018
 #a dataset year_max of 2014, predicting 2015, with default lags of 2 gives FRAM/spwn through 2012
 #but with "compiling" lags of 1 gives FRAM/spwn through 2013
 
-oat_lag2 <- set_names(oat_years_max) |> 
-  map(function(x) {
-    print(x)
-    stan_data_list <- stan_data_filter(coho_data_tbl, year_min = oat_year_min, year_max = x, lag_spwn = 2, lag_hvst = 2) 
-    print(stan_data_list$y_min_max)
-    print(c("smolt", range(stan_data_list$smolt$year)))
-    print(c("MS", range(stan_data_list$MS$year)))
-    print(c("spwn", range(stan_data_list$spwn$year)))
-    print(c("hvst", range(stan_data_list$hvst$year)))
-    print(c("rtrn", range(stan_data_list$rtrn$year)))
-    
-    print(Sys.time())
+oat_wrap <- function(iter, #3K 
+                     chain, #4
+                     oat_year_min, #1998,
+                     oat_years_max, #2008:2018, #max data year, predicting 2009:2019
+                     lag_spwn, lag_hvst, lag_MS, lag_smolt #deducted from data year
+                     ){
+  #build a list named by max data year 
+  oat <- set_names(oat_years_max) |> 
+    map(function(x) {
+      print(paste("max data year", x, "predicting", x+1))
+      stan_data_list <- stan_data_filter(coho_data_tbl, year_min = oat_year_min, year_max = x, lag_spwn = lag_spwn, lag_hvst = lag_hvst, lag_MS = lag_MS, lag_smolt = lag_smolt) 
+      print(stan_data_list$y_min_max)
+      print(c("smolt", range(stan_data_list$smolt$year)))
+      print(c("MS", range(stan_data_list$MS$year)))
+      print(c("spwn", range(stan_data_list$spwn$year)))
+      print(c("hvst", range(stan_data_list$hvst$year)))
+      print(c("rtrn", range(stan_data_list$rtrn$year)))
 
-    fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
-    #recall stan data list arg n_year+1 relative to STIPM gives adult_pred in desired year
-    fit_ar1_pred <- summary(fit_ar1, pars = "adult_pred", probs = p)$summary |>
-      as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
-      mutate(
-        var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-        pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-        year = last(stan_data_list$y_min_max) + 1, #should be x+1
-        mod = "ar1"
-      ) |>
-      left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
+      print(paste("AR1 start", Sys.time()))
 
-    print(Sys.time())
-    
-    fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
-    #recall adult_pred is smolt[n_year]*surv[n_year] for adult run size (spwn+hvst) n_year+1
-    fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred", probs = p)$summary |>
-      as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
-      mutate(
-        var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-        pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-        year = last(stan_data_list$y_min_max) + 1, #should be x+1
-        mod = "stipm"
-      ) |>
-      left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
-    
-    out <- bind_rows(fit_ar1_pred, fit_stipm_pred)
-    saveRDS(out, paste0("oat_fits/oat_lag2_",x+1,".rds"))
+      fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
+      #recall AR1 stan data arg n_year+1 relative to STIPM gives adult_pred in desired year
+      fit_ar1_pred <- summary(fit_ar1, pars = "adult_pred")$summary |>
+        as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+        mutate(
+          var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+          pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
+          year = last(stan_data_list$y_min_max) + 1, #pred year, max data year x+1
+          mod = "ar1",
+          n_diverg = get_sampler_params(fit_ar1, inc_warmup = FALSE) |>
+            map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+        ) |>
+        left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
 
-    return(out)
-  })
+      print(paste("STIPM start", Sys.time()))
 
+      fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
+      #recall stipm adult_pred is smolt[n_year]*surv[n_year] to give adult run size (spwn+hvst) n_year+1
+      fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
+        as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+        mutate(
+          var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+          pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
+          year = last(stan_data_list$y_min_max) + 1, #pred year, max data year x+1
+          mod = "stipm",
+          n_diverg = get_sampler_params(fit_stipm, inc_warmup = FALSE) |>
+            map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+        ) |>
+        left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
 
-#identical to above other than lag_spwn and lag_hvst args in stan_data_filter()
-oat_lag1 <- set_names(oat_years_max) |> 
-  map(function(x) {
-    print(x)
-    stan_data_list <- stan_data_filter(coho_data_tbl, year_min = oat_year_min, year_max = x, lag_spwn = 1, lag_hvst = 1) 
-    print(stan_data_list$y_min_max)
-    print(c("smolt", range(stan_data_list$smolt$year)))
-    print(c("MS", range(stan_data_list$MS$year)))
-    print(c("spwn", range(stan_data_list$spwn$year)))
-    print(c("hvst", range(stan_data_list$hvst$year)))
-    print(c("rtrn", range(stan_data_list$rtrn$year)))
+      pred_out <- bind_rows(fit_ar1_pred, fit_stipm_pred)
+      saveRDS(pred_out, paste0("oat_fits/oat_pred_",x+1,"_lags_spwn",lag_spwn,"_hvst",lag_hvst,"_MS",lag_MS,"_smolt",lag_smolt,".rds"))
+      return(pred_out) #list element for max-data-year-x 
+    })
+  return(oat)
+}
 
-    print(Sys.time())
-
-    fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
-    fit_ar1_pred <- summary(fit_ar1, pars = "adult_pred", probs = p)$summary |>
-      as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
-      mutate(
-        var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-        pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-        year = last(stan_data_list$y_min_max) + 1, #should be x+1
-        mod = "ar1"
-      ) |>
-      left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
-
-    print(Sys.time())
-    
-    fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
-    fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred", probs = p)$summary |>
-      as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
-      mutate(
-        var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-        pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-        year = last(stan_data_list$y_min_max) + 1, #should be x+1
-        mod = "stipm"
-      ) |>
-      left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
-    
-    out <- bind_rows(fit_ar1_pred, fit_stipm_pred)
-    saveRDS(out, paste0("oat_fits/oat_lag1_",x+1,".rds"))
-
-    return(out)
-  })
+#predicting 2009:2019
+oat_lag2 <- oat_wrap(iter = 3000, chain = 4, oat_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 2, lag_hvst = 2, lag_MS = 1, lag_smolt = 0)
+oat_lag1 <- oat_wrap(iter = 3000, chain = 4, oat_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 1, lag_hvst = 1, lag_MS = 1, lag_smolt = 0)
+oat_lag0 <- oat_wrap(iter = 3000, chain = 4, oat_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 0, lag_hvst = 0, lag_MS = 1, lag_smolt = 0)
 
 
-oat <- bind_rows(
-  bind_rows(oat_lag2) |> mutate(lag = "l2")
-  ,
-  bind_rows(oat_lag1) |> mutate(lag = "l1")
-)
-
-saveRDS(oat, "oat_fits/oat_l2_l1_2010_2018.rds")
+# oat <- bind_rows(
+#   bind_rows(oat_lag2) |> mutate(lag = "l2")
+#   ,
+#   bind_rows(oat_lag1) |> mutate(lag = "l1")
+# )
+# 
+# saveRDS(oat, "oat_fits/oat_l2_l1_2010_2018.rds")
 
 ```
 
