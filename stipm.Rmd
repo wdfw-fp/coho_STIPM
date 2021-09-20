@@ -52,7 +52,7 @@ sf_coord <- coho_data_tbl |>
 # ggplot(sf_coord) + geom_sf(aes(color = hab_km, size = hab_km)) + geom_sf_text(aes(label = pop_id))
 
 
-load("stipm.Rdata")
+##load("stipm.Rdata")
 
 ```
 
@@ -689,6 +689,120 @@ oat_lag0 <- oat_wrap(iter = 3000, chain = 4, oat_year_min = 1998, oat_years_max 
 
 ```
 
+## REVISE full dataset
+
+Needs review 
+
+```{r full_data}
+iter <- 200
+chain <- 2
+year_min <- 1998
+year_max <- 2018
+
+stan_data_list <- stan_data_filter(coho_data_tbl, year_min = year_min, year_max = year_max, lag_spwn = 1, lag_hvst = 1) 
+
+print(stan_data_list$y_min_max)
+print(c("smolt", range(stan_data_list$smolt$year)))
+print(c("MS", range(stan_data_list$MS$year)))
+print(c("spwn", range(stan_data_list$spwn$year)))
+print(c("hvst", range(stan_data_list$hvst$year)))
+print(c("rtrn", range(stan_data_list$rtrn$year)))
+
+fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
+
+# fit_ar1_pred <- 
+summary(fit_ar1, pars = "adult_pred")$summary |>
+  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+  mutate(
+    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+    pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
+    year = last(stan_data_list$y_min_max) + 1, #should be x+1
+    mod = "ar1",
+    n_diverg = get_sampler_params(fit_ar1, inc_warmup = FALSE) |> 
+      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+  ) |>
+  left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
+
+fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
+
+fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
+  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+  mutate(
+    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+    pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
+    year = last(stan_data_list$y_min_max) + 1, #should be x+1
+    mod = "stipm",
+    n_diverg = get_sampler_params(fit_stipm, inc_warmup = FALSE) |> 
+      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+  ) |>
+  left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
+
+```
+
+
+# results
+
+```{r read_oat}
+#tibbles of annual predictions for AR1 & STIPM with a given lag 
+
+bind_rows(
+  list.files("oat_fits", pattern = "lags_spwn0_hvst0", full.names = T) |>
+    map_df(~readRDS(.x)) |> mutate(lag_mod = paste0("l0_", mod))
+  ,
+  list.files("oat_fits", pattern = "lags_spwn1_hvst1", full.names = T) |> 
+    map_df(~readRDS(.x)) |> mutate(lag_mod = paste0("l1_", mod))
+  ,
+  list.files("oat_fits", pattern = "lags_spwn2_hvst2", full.names = T) |> 
+    map_df(~readRDS(.x)) |> mutate(lag_mod = paste0("l2_", mod))
+) |> 
+  select(lag_mod, year, StockID, pop_id, pop, n_diverg, n_eff, Rhat, `2.5%`:`97.5%`) |> 
+  saveRDS("oat_fits/oat_l0_l1_l2_2009_2019.rds")
+
+oat <- readRDS("oat_fits/oat_l0_l1_l2_2009_2019.rds")
+
+oat |> group_by(lag_mod, year) |> 
+  summarise(
+    n_diverg = max(n_diverg),
+    Rhat_med = median(Rhat), Rhat_max = max(Rhat),
+    n_eff_med = median(n_eff), n_eff_min = min(n_eff),
+    .groups = "drop") |> 
+  print(n = 80)
+
+```
+
+```{r oat_obs, eval=FALSE}
+(
+oat_obs <- left_join(
+  oat,
+  coho_data_tbl |> select(year, StockID, rtrn) |> 
+    #adding MASE denominator
+    group_by(StockID) |> 
+    mutate(
+      scale_err = mean(abs(rtrn - c(NA, head(rtrn, -1))), na.rm = T)
+    ) |> 
+    ungroup(),
+  by = c("year", "StockID")
+  ) |>
+  select(lag_mod, StockID, pop_id, pop, year, scale_err, rtrn,  `2.5%`:`97.5%`) |> 
+  mutate(
+    in_50 = (rtrn >= `25%`) & (rtrn <= `75%`),
+    in_95 = (rtrn >= `2.5%`) & (rtrn <= `97.5%`),
+    err = rtrn - `50%`, #positive is underforecast, negative is "fewer than expected"
+    err_abs = abs(err),
+    err_log = log(rtrn) - log(`50%`),
+    err_pct = err / rtrn,
+    err_abs_pct = err_abs / rtrn,
+    #kept as Eq26 in paper with pred-obs
+    mase = abs(`50%` - rtrn) / scale_err
+  )
+)
+```
+
+
+
+## diagnostics
+
+Add N-divergent
 
 ```{r oat_rhat_neff}
 # oat |> 
@@ -719,32 +833,8 @@ oat |>
 
 ```
 
-```{r oat_obs, eval=FALSE}
-(
-oat_obs <- left_join(
-  oat,
-  coho_data_tbl |> select(year, pop_id, rtrn) |> 
-    #adding MASE denominator
-    group_by(pop_id) |> 
-    mutate(
-      scale_err = mean(abs(rtrn - c(NA, head(rtrn, -1))), na.rm = T)
-    ) |> 
-    ungroup(),
-  by = c("year", "pop_id")
-  ) |>
-  select(lag_mod, StockID, pop_id, pop, year, scale_err, rtrn,  `10%`:`90%`) |> 
-  mutate(
-    in_10_90 = (rtrn >= `10%`) & (rtrn <= `90%`),
-    err = rtrn - `50%`, #positive is underforecast, negative is "fewer than expected"
-    err_abs = abs(err),
-    err_log = log(rtrn) - log(`50%`),
-    err_pct = err / rtrn,
-    err_abs_pct = err_abs / rtrn,
-    #kept as Eq26 in paper with pred-obs
-    mase = abs(`50%` - rtrn) / scale_err
-  )
-)
-```
+
+## performance
 
 ```{r oat_obs_mase_by_lag}
 #MASE ratios by lag
@@ -801,7 +891,7 @@ oat_obs |>
 ```
 
 
-```{r}
+```{r odds_and_ends}
 # rr <- bind_cols(
 #   readxl::read_excel("O:/code/coho/forecast_wb/2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", range = "RR!C38:C48", col_names = "year"),
 #   readxl::read_excel("O:/code/coho/forecast_wb/2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", range = "RR!E38:E48", col_names = "escp"),
@@ -859,6 +949,7 @@ oat_obs |>
   facet_wrap(~pop+lag_mod, scales = "free")
 ```
 
+## forecasts
 
 ```{r oat_obs_pred_patchwork}
 set_names(2009:2017) |> 
@@ -918,55 +1009,6 @@ animate(
 anim_save("oat_l1_anim.gif")
 
 ```
-
-## full dataset
-
-```{r}
-iter <- 200
-chain <- 2
-year_min <- 1998
-year_max <- 2018
-
-stan_data_list <- stan_data_filter(coho_data_tbl, year_min = year_min, year_max = year_max, lag_spwn = 1, lag_hvst = 1) 
-
-print(stan_data_list$y_min_max)
-print(c("smolt", range(stan_data_list$smolt$year)))
-print(c("MS", range(stan_data_list$MS$year)))
-print(c("spwn", range(stan_data_list$spwn$year)))
-print(c("hvst", range(stan_data_list$hvst$year)))
-print(c("rtrn", range(stan_data_list$rtrn$year)))
-
-fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
-
-# fit_ar1_pred <- 
-summary(fit_ar1, pars = "adult_pred")$summary |>
-  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
-  mutate(
-    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-    pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-    year = last(stan_data_list$y_min_max) + 1, #should be x+1
-    mod = "ar1",
-    n_diverg = get_sampler_params(fit_ar1, inc_warmup = FALSE) |> 
-      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
-  ) |>
-  left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
-
-fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
-
-fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
-  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
-  mutate(
-    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-    pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-    year = last(stan_data_list$y_min_max) + 1, #should be x+1
-    mod = "stipm",
-    n_diverg = get_sampler_params(fit_stipm, inc_warmup = FALSE) |> 
-      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
-  ) |>
-  left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
-
-```
-
 
 
 # Can delete soon
