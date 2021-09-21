@@ -697,10 +697,13 @@ Needs review
 iter <- 200
 chain <- 2
 year_min <- 1998
-year_max <- 2018
+year_max <- 2010
 
-stan_data_list <- stan_data_filter(coho_data_tbl, year_min = year_min, year_max = year_max, lag_spwn = 1, lag_hvst = 1) 
-
+(stan_data_list <- stan_data_filter(coho_data_tbl, 
+                                   year_min = year_min, 
+                                   year_max = year_max,
+                                   lag_spwn = 0, lag_hvst = 0))
+str(stan_data_list, max.level = 1)
 print(stan_data_list$y_min_max)
 print(c("smolt", range(stan_data_list$smolt$year)))
 print(c("MS", range(stan_data_list$MS$year)))
@@ -742,35 +745,23 @@ fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
 
 # results
 
-```{r read_oat}
-#tibbles of annual predictions for AR1 & STIPM with a given lag 
-
-bind_rows(
-  list.files("oat_fits", pattern = "lags_spwn0_hvst0", full.names = T) |>
-    map_df(~readRDS(.x)) |> mutate(lag_mod = paste0("l0_", mod))
-  ,
-  list.files("oat_fits", pattern = "lags_spwn1_hvst1", full.names = T) |> 
-    map_df(~readRDS(.x)) |> mutate(lag_mod = paste0("l1_", mod))
-  ,
-  list.files("oat_fits", pattern = "lags_spwn2_hvst2", full.names = T) |> 
-    map_df(~readRDS(.x)) |> mutate(lag_mod = paste0("l2_", mod))
-) |> 
-  select(lag_mod, year, StockID, pop_id, pop, n_diverg, n_eff, Rhat, `2.5%`:`97.5%`) |> 
-  saveRDS("oat_fits/oat_l0_l1_l2_2009_2019.rds")
+```{r read_oat_and_oat_obs}
+# #tibbles of annual predictions for AR1 & STIPM with a given lag 
+# bind_rows(
+#   list.files("oat_fits", pattern = "lags_spwn0_hvst0", full.names = T) |>
+#     map_df(~readRDS(.x)) |> mutate(lag_mod = paste0("l0_", mod))
+#   ,
+#   list.files("oat_fits", pattern = "lags_spwn1_hvst1", full.names = T) |> 
+#     map_df(~readRDS(.x)) |> mutate(lag_mod = paste0("l1_", mod))
+#   ,
+#   list.files("oat_fits", pattern = "lags_spwn2_hvst2", full.names = T) |> 
+#     map_df(~readRDS(.x)) |> mutate(lag_mod = paste0("l2_", mod))
+# ) |> 
+#   select(lag_mod, year, StockID, pop_id, pop, n_diverg, n_eff, Rhat, `2.5%`:`97.5%`) |> 
+#   saveRDS("oat_fits/oat_l0_l1_l2_2009_2019.rds")
 
 oat <- readRDS("oat_fits/oat_l0_l1_l2_2009_2019.rds")
 
-oat |> group_by(lag_mod, year) |> 
-  summarise(
-    n_diverg = max(n_diverg),
-    Rhat_med = median(Rhat), Rhat_max = max(Rhat),
-    n_eff_med = median(n_eff), n_eff_min = min(n_eff),
-    .groups = "drop") |> 
-  print(n = 80)
-
-```
-
-```{r oat_obs, eval=FALSE}
 (
 oat_obs <- left_join(
   oat,
@@ -783,11 +774,13 @@ oat_obs <- left_join(
     ungroup(),
   by = c("year", "StockID")
   ) |>
-  select(lag_mod, StockID, pop_id, pop, year, scale_err, rtrn,  `2.5%`:`97.5%`) |> 
+  select(lag_mod, year, StockID, pop_id, pop, scale_err, rtrn, `2.5%`:`97.5%`) |> 
   mutate(
     in_50 = (rtrn >= `25%`) & (rtrn <= `75%`),
     in_95 = (rtrn >= `2.5%`) & (rtrn <= `97.5%`),
-    err = rtrn - `50%`, #positive is underforecast, negative is "fewer than expected"
+    #negative is overforecast, "fewer returned than predicted"
+    #positive is underforecast, 
+    err = rtrn - `50%`, 
     err_abs = abs(err),
     err_log = log(rtrn) - log(`50%`),
     err_pct = err / rtrn,
@@ -799,42 +792,71 @@ oat_obs <- left_join(
 ```
 
 
-
 ## diagnostics
 
-Add N-divergent
+```{r oat_rhat_neff_n_diverg}
+#all years, all pops
+oat |> 
+  group_by(lag_mod) |> 
+  summarise(
+    n_diverg = max(n_diverg),
+    Rhat_med = median(Rhat), Rhat_max = max(Rhat),
+    n_eff_med = median(n_eff), n_eff_min = min(n_eff),
+    .groups = "drop")
 
-```{r oat_rhat_neff}
-# oat |> 
-#   group_by(lag_mod, pop_id, pop) |> 
-#   summarise(Rhat_max = max(Rhat), n_eff_min = min(n_eff), .groups = "drop") |> 
-#   pivot_wider(names_from = lag_mod, values_from = c(Rhat_max, n_eff_min)) |>
-#   select(pop_id, pop, starts_with("Rhat"), starts_with("n_eff")) |> print(n = 40)
+#by year, all pops
+oat |> 
+  group_by(lag_mod, year) |> 
+  summarise(
+    n_diverg = max(n_diverg),
+    Rhat_med = median(Rhat), Rhat_max = max(Rhat),
+    n_eff_med = median(n_eff), n_eff_min = min(n_eff),
+    .groups = "drop") |> 
+  # gt::gt(rowname_col = "lag_mod") |> 
+  # gt::tab_header(title = "One-ahead Rhat and effective draws", subtitle = "Willapa Bay Natural") |> 
+  # gt::fmt_number(contains("Rhat"), decimals = 2) |> 
+  # gt::fmt_number(contains("n_eff"), decimals = 0)
+  print(n = 80)
 
-# #all years
-# oat |> 
-#   select(year, lag_mod, pop_id, pop, Rhat, n_eff) |> 
-#   filter(pop_id == 34) |> 
-#   #pivot_longer(-c(year, lag_mod, pop_id, pop), names_to = "var", values_to = "val") |> 
-#   gt::gt(groupname_col = "year", rowname_col = "lag_mod") |> 
-#   gt::cols_hide(c("pop_id", "pop")) |> 
-#   gt::tab_header(title = "One-ahead Rhat and effective draws", subtitle = "Willapa Bay Natural") |> 
-#   gt::fmt_number(Rhat, decimals = 2) |> gt::fmt_number(n_eff, decimals = 0)
-
-#max/min
-oat |>
-  group_by(lag_mod, pop_id, pop) |>
-  summarise(Rhat_max = max(Rhat), n_eff_min = min(n_eff), .groups = "drop") |>
-  filter(pop_id == 34) |> 
+#Willapa, all years, similar to "all pops"
+#no diffs between lags for Rhat
+oat |> 
+  filter(StockID == 161) |> 
+  #arrange(year, lag_mod) |> filter(str_detect(lag_mod, "stipm")) |> print(n = 100)
+  group_by(lag_mod) |> 
+  summarise(
+    n_diverg = max(n_diverg),
+    Rhat_med = median(Rhat), Rhat_max = max(Rhat),
+    n_eff_med = median(n_eff), n_eff_min = min(n_eff),
+    .groups = "drop") |> 
   gt::gt(rowname_col = "lag_mod") |> 
-  gt::cols_hide(c("pop_id", "pop")) |> 
+#  gt::cols_hide(c("pop_id", "pop")) |> 
   gt::tab_header(title = "One-ahead Rhat and effective draws", subtitle = "Willapa Bay Natural") |> 
-  gt::fmt_number(Rhat_max, decimals = 2) |> gt::fmt_number(n_eff_min, decimals = 0)
+  gt::fmt_number(contains("Rhat"), decimals = 2) |> 
+  gt::fmt_number(contains("n_eff"), decimals = 0)
+
+#n_eff boxes
+oat |> 
+  filter(StockID == 161, str_detect(lag_mod, "stipm")) |> 
+  ggplot(aes(lag_mod, n_eff)) + geom_boxplot() + geom_jitter(width = 0.1)
+#n_eff col timeseries, arguably slightly better after 2012
+oat |> 
+  filter(StockID == 161, str_detect(lag_mod, "stipm")) |> 
+  ggplot(aes(factor(year), n_eff, fill = lag_mod)) + geom_col(position = "dodge") + scale_fill_grey()
+
 
 ```
 
 
 ## performance
+
+```{r}
+oat_obs |> 
+  filter(StockID == 161, str_detect(lag_mod, "stipm")) |> 
+
+```
+
+
 
 ```{r oat_obs_mase_by_lag}
 #MASE ratios by lag
