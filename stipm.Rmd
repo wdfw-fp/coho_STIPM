@@ -39,7 +39,7 @@ fp <- list(
 # # fram_stocks <- c(105,93,89,45,51,55,75,81,61,23,149,63,107,115,111,157,97,135,153,101,69,1,85,139,131,127,145,11,17,59,35,29,117,161)
 # 
 # pop_meta <- readxl::read_excel("pop_meta.xlsx") |>
-#   dplyr::select(pop_id:hat) 
+#   dplyr::select(pop_id:hat)
 # #deleted and reindexed pop in file, no longer need: |> dplyr::filter(StockID != 13, StockID != 43)
 
 coho_data_tbl <- readr::read_csv(fp$data_full)
@@ -397,6 +397,8 @@ cwt |>
 ```{r updating_full_dataset, eval=FALSE}
 #Note the original negative escapement in A12A Wild in 2005 is due to an error in the FRAM database
 #so still needs correcting: spwn is coerced to 0 here, but harvest is unaffected b/c drawn directly from Mortality
+#note also Grays Hbr Misc Wild missing 2000 & 2001 in FRAM mdb and Area 13A Miscellaneous Wild missing 1996
+#both fixed with simple insertion of NAs
 
 #here the meta identifiers are (expanding left) joined to the FRAM data
 #after these have been full joined to full joined CWT and smolt data
@@ -406,10 +408,12 @@ coho_data_tbl <- pop_meta |>
     full_join( #FRAM + (CWT + smolt)
       read_csv(fp$data_fram) |>
         select(-StockLongName) |>
+        bind_rows(tibble(year = c(1996, 2000:2001), StockID = c(81, 157, 157))) |> 
         mutate(
           spwn = if_else(spwn < 0, 0.01, spwn),
           rtrn = spwn + hvst
-        ) #1153, 1986:2019
+        ) |>  
+        arrange(StockID, year) #1156, 1986:2019
       ,
       full_join(
         read_csv(fp$data_cwt), #396
@@ -712,6 +716,13 @@ print(c("hvst", range(stan_data_list$hvst$year)))
 print(c("rtrn", range(stan_data_list$rtrn$year)))
 
 fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
+
+#Grays Hbr Misc 16/157 missing 2000 & 2001 in FRAM data
+stan_data_list$rtrn |> count(pop_id, pop, StockID) |> arrange(n) |> print(n=50)
+coho_data_tbl |> filter(StockID == 157) |> print(n=50) #missing 2000 & 2001
+coho_data_tbl |> count(pop_id, pop, StockID) |> arrange(n) |>  print(n=50)
+coho_data_tbl |> filter(StockID == 81) |> print(n=50) #missing 1996
+
 
 # fit_ar1_pred <- 
 summary(fit_ar1, pars = "adult_pred")$summary |>

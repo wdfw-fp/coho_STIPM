@@ -247,6 +247,7 @@ pop_id,pop,StockID,StockLongName,lon,lat,hab_km,smolt_ocn_surv_pop,hat,year,spwn
 8,Area 13A Miscellaneous Wild,81,Area 13A Miscellaneous Wild UnMarked,-122.702698,47.264969,46.7,NA,NA,1993,149.871275,440.88861000000003,590.759885,NA,NA,NA
 8,Area 13A Miscellaneous Wild,81,Area 13A Miscellaneous Wild UnMarked,-122.702698,47.264969,46.7,NA,NA,1994,49.762374,74.369265,124.131639,NA,NA,NA
 8,Area 13A Miscellaneous Wild,81,Area 13A Miscellaneous Wild UnMarked,-122.702698,47.264969,46.7,NA,NA,1995,99.867942,110.506077,210.374019,NA,NA,NA
+8,Area 13A Miscellaneous Wild,81,Area 13A Miscellaneous Wild UnMarked,-122.702698,47.264969,46.7,NA,NA,1996,NA,NA,NA,NA,NA,NA
 8,Area 13A Miscellaneous Wild,81,Area 13A Miscellaneous Wild UnMarked,-122.702698,47.264969,46.7,NA,NA,1997,149.689676,63.300526,212.99020199999998,NA,NA,NA
 8,Area 13A Miscellaneous Wild,81,Area 13A Miscellaneous Wild UnMarked,-122.702698,47.264969,46.7,NA,NA,1998,99.976898,44.804447,144.78134500000002,NA,NA,NA
 8,Area 13A Miscellaneous Wild,81,Area 13A Miscellaneous Wild UnMarked,-122.702698,47.264969,46.7,NA,NA,1999,29.000099,10.766495,39.766594,NA,NA,NA
@@ -523,6 +524,8 @@ pop_id,pop,StockID,StockLongName,lon,lat,hab_km,smolt_ocn_surv_pop,hat,year,spwn
 16,Grays Harbor Miscellaneous Wild,157,Grays Harbor Miscellaneous Wild UnMarked,-124.033166,46.939467,211,NA,NA,1997,343.033572,40.446619000000005,383.480191,NA,NA,NA
 16,Grays Harbor Miscellaneous Wild,157,Grays Harbor Miscellaneous Wild UnMarked,-124.033166,46.939467,211,NA,NA,1998,1288.999096,348.73216700000006,1637.7312630000001,NA,NA,NA
 16,Grays Harbor Miscellaneous Wild,157,Grays Harbor Miscellaneous Wild UnMarked,-124.033166,46.939467,211,NA,NA,1999,1210.025641,218.563135,1428.588776,NA,NA,NA
+16,Grays Harbor Miscellaneous Wild,157,Grays Harbor Miscellaneous Wild UnMarked,-124.033166,46.939467,211,NA,NA,2000,NA,NA,NA,NA,NA,NA
+16,Grays Harbor Miscellaneous Wild,157,Grays Harbor Miscellaneous Wild UnMarked,-124.033166,46.939467,211,NA,NA,2001,NA,NA,NA,NA,NA,NA
 16,Grays Harbor Miscellaneous Wild,157,Grays Harbor Miscellaneous Wild UnMarked,-124.033166,46.939467,211,NA,NA,2002,3942.999986,539.245497,4482.245483,NA,NA,NA
 16,Grays Harbor Miscellaneous Wild,157,Grays Harbor Miscellaneous Wild UnMarked,-124.033166,46.939467,211,NA,NA,2003,3041.999985,375.349535,3417.3495199999998,NA,NA,NA
 16,Grays Harbor Miscellaneous Wild,157,Grays Harbor Miscellaneous Wild UnMarked,-124.033166,46.939467,211,NA,NA,2004,2133.440512,364.090652,2497.531164,NA,NA,NA
