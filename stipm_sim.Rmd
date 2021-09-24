@@ -1,0 +1,215 @@
+---
+title: "stipm AR1 sim"
+author: "dan.auerbach@dfw.wa.gov modifying DeFilippo et al. 2021 AR1 model and fitting to simulated data in consultation with Thomas.Buehrens@dfw.wa.gov"
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+output: 
+  wdfwTemplates::wdfw_html_format
+---
+
+This script fits the AR1 model [original implementation](https://github.com/lukasdefilippo/ST-IPM) from [DeFilippo et al.'s (2021)](https://www.sciencedirect.com/science/article/pii/S0165783621001429) "Spatiotemporal Integrated Population Model" and tests alternative parameterizations to improve convergence on simulated data.
+
+# Setup
+```{r setup, results = FALSE, warning = FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE, results = FALSE, warning = FALSE, message = FALSE)
+library("tidyverse")
+library("gt")
+library("odbc"); library("DBI")
+library("rstan")
+library("bayesplot")
+options(mc.cores = 10) #12 on DA machine
+rstan_options(auto_write = TRUE)
+theme_set(theme_light())
+```
+
+# Function to simulate AR1 dataset
+```{r}
+make_sim_data<-function(yrs, pops){
+   #data
+  n_year = yrs#14
+  n_pop = pops#34
+  n_pop_tot = pops#34
+  pop_tot = 1:n_pop
+  n_tot = (n_year-1) * n_pop
+  
+  
+  #params
+  sigma_obs = rlnorm(n_pop,-1,0.5)
+  sigma_proc = rlnorm(n_pop,-1,0.5)
+  mu = rnorm(n_pop, 8, 2)
+  phi = rbeta(n_pop,3,3)
+  init = rnorm(n_pop,mu,sqrt(sigma_proc^2/(1-phi^2)))
+  log_adult_est = matrix(NA,n_year,n_pop)
+  adult_obs= matrix(NA,n_year-1,n_pop)
+  proc_dev = matrix(NA,n_year-1,n_pop)
+  for(i in 1:n_pop){
+  	for(y in 1:n_year){
+  		if(y==1){
+  			log_adult_est[y,i] = init[i];
+  			adult_obs[y,i] = rlnorm(1,log_adult_est[y,i],sigma_obs[i])
+  		}else{
+  		  proc_dev[y-1, i] = rnorm(1,0,sigma_proc[i])
+  			log_adult_est[y,i] = mu[i] + phi[i]*(log_adult_est[y-1,i]-mu[i]) + proc_dev[y-1, i];
+  			if(y<n_year){
+  			  adult_obs[y,i] = rlnorm(1,log_adult_est[y,i],sigma_obs[i])
+  			}
+  		}
+  	}
+  }
+  adult_obs_long<-as_tibble(adult_obs)%>%
+    rowid_to_column()%>%
+    rename(year_id=rowid)%>%
+    pivot_longer(cols = !"year_id")%>%
+    mutate(pop_id=as.integer(str_replace(name,"V","")))%>%
+    rename(tot_dat=value)%>%
+    select(-name)%>%
+    arrange(pop_id,year_id)
+  
+  #more data
+  tot_dat = adult_obs_long$tot_dat
+  tot_dat_yr = adult_obs_long$year_id
+  tot_dat_pop = adult_obs_long$pop_id
+  tot_true = adult_obs_long$year_id
+  slice_tot_start=adult_obs_long%>%
+    rownames_to_column()%>%
+    group_by(pop_id)%>%
+    filter(year_id==1)%>%
+    ungroup()%>%
+    select(rowname)%>%
+    mutate(rowname = as.integer(rowname))%>%
+    deframe()
+  slice_tot_end<-adult_obs_long%>%
+    rownames_to_column()%>%
+    group_by(pop_id)%>%
+    filter(year_id==max(year_id))%>%
+    ungroup()%>%
+    select(rowname)%>%
+    mutate(rowname = as.integer(rowname))%>%
+    deframe()
+  
+  stan_data = list(
+    n_year = n_year,
+    n_pop = n_pop,
+    n_pop_tot = n_pop_tot,
+    pop_tot = pop_tot,
+    n_tot = n_tot,
+    tot_dat = tot_dat,
+    tot_true = tot_true,
+    slice_tot_start = slice_tot_start,
+    slice_tot_end = slice_tot_end,
+    tot_dat_yr = tot_dat_yr,
+    tot_dat_pop = tot_dat_pop
+  )
+  
+  params = list(
+    sigma_obs = sigma_obs,
+    sigma_proc = sigma_proc,
+    mu = mu,
+    phi = phi,
+    init = init,
+    log_adult_est = log_adult_est,
+    adult_obs= adult_obs,
+    proc_dev = proc_dev
+  )
+  results <- list(stan_data,params)
+  names(results)[[1]]<-"stan_data"
+  names(results)[[2]]<-"params"
+  return(results)
+}
+```
+
+Next, wrappers to the `rstan::stan` function facilitate repeated fitting with consistent control parameters and input data lists.
+
+```{r ar1_functions}
+stan_ar1_sim <- function(stan_data,
+                         modelfile, 
+                         n_iter = 2000, 
+                         n_chain = 2, 
+                         init="random",
+                         warmup = 1000,
+                         thin = 1,
+                         control = list(adapt_delta = 0.99, max_treedepth = 10.25)
+                         )
+  {
+  #note following orig naming convention where "tot" refers to "total return" = spwn + hvst = rtrn, as estimated from FRAM
+  stan_fit <- stan(
+    file = modelfile,
+    iter = n_iter, 
+    chains = n_chain, 
+    seed = 222,
+    init=init,
+    warmup = warmup,
+    thin = thin,
+    control = control,
+    data = stan_data
+  )
+  return(stan_fit)
+}
+```
+
+# Simulate AR1 data, fit AR1 model to simulated AR1 data
+```{r}
+#simulate data
+simdat<-make_sim_data(yrs = 40, pops = 2)
+
+
+#fit model
+fit_ar1 <- stan_ar1_sim(stan_data = simdat$stan_data,
+                        modelfile = 
+                        #'LD_coho_forecast_AR_ind_2.stan', #lukas original
+                        'LD_coho_forecast_AR_ind_2_v2.stan', #thomas reparam but preserve data format
+                        #'LD_coho_forecast_AR_ind_2_v3.stan', #thomas reparam, new data format
+                        n_iter = 2000,
+                        n_chain = 4,
+                        warmup = 1000,
+                        thin = 1,
+                        control = list(adapt_delta = 0.995, max_treedepth = 11)
+                        )
+
+#fit diagnostics
+# posterior<-as.array(fit_ar1)
+# np<-nuts_params(fit_ar1)
+# color_scheme_set("darkgray")
+# mcmc_pairs(posterior, np = np, pars = c("mu[1]","sigma_proc[1]","sigma_obs[1]","phi[1]","init[1]"),
+#            off_diag_args = list(size = 0.75))
+
+#save model summary
+write.csv(summary(fit_ar1)$summary,"result.csv")
+
+#print "true" parameters from simulation
+print(simdat$params)
+
+#print model estimated posterior medians to compare with "truth"
+summary(fit_ar1)$summary%>%
+  as.data.frame()%>%
+  rownames_to_column()%>%
+  as_tibble()%>%
+  select(rowname,`50%`)%>%
+  print(n=200)
+```
+
+
+Try Eric Ward AR1
+```{r}
+library(devtools)
+install_github("nwfsc-timeseries/atsar")
+library(atsar)
+
+plot(simdat$params$adult_obs[,1],type="b")
+
+ss_ar = fit_stan(y = simdat$params$adult_obs[,1],
+                 est_drift=FALSE,
+                 model_name = "ss_ar",
+                 family = "lognormal",
+                 mcmc_list=list(
+                   n_mcmc = 2000,
+                   n_burn = 1000,
+                   n_chain = 4,
+                   n_thin = 1,
+                   control = list(adapt_delta=0.9999)
+                 )
+)
+write.csv(summary(ss_ar)$summary,"results_ward.csv")
+
+```
