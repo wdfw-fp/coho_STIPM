@@ -563,9 +563,9 @@ Next, wrappers to the `rstan::stan` function facilitate repeated fitting with co
 stan_ar1 <- function(stan_data, n_iter = 200, n_chain = 2){
   #note following orig naming convention where "tot" refers to "total return" = spwn + hvst = rtrn, as estimated from FRAM
   stan_fit <- stan(
-    file = 'LD_coho_forecast_AR_ind_2.stan',
+    file = 'LD_coho_forecast_AR_ind_2_v2.stan',
     iter = n_iter, chains = n_chain, thin = 1, seed = 222,
-    control = list(adapt_delta = 0.99, max_treedepth = 10.25),
+    control = list(adapt_delta = 0.999, max_treedepth = 12),
     data = list(
       n_year = length(stan_data$y_min_max) + 1, #sets year of adult_pred and year-dim of adult_est 
       n_pop = length(unique(coho_data_tbl$pop_id)), #number of populations in full dataset
@@ -1146,7 +1146,7 @@ anim_save("oat_l1_anim.gif")
 # REVISE Full dataset
 
 ```{r full_data, eval=FALSE}
-iter <- 200
+iter <- 300
 chain <- 2
 year_min <- 1998
 year_max <- 2010
@@ -1155,7 +1155,7 @@ year_max <- 2010
                                    year_min = year_min, 
                                    year_max = year_max,
                                    lag_spwn = 0, lag_hvst = 0))
-str(stan_data_list, max.level = 1)
+#str(stan_data_list, max.level = 1)
 print(stan_data_list$y_min_max)
 print(c("smolt", range(stan_data_list$smolt$year)))
 print(c("MS", range(stan_data_list$MS$year)))
@@ -1165,17 +1165,7 @@ print(c("rtrn", range(stan_data_list$rtrn$year)))
 
 fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
 
-#Grays Hbr Misc 16/157 missing 2000 & 2001 in FRAM data
-stan_data_list$rtrn |> count(pop_id, pop, StockID) |> arrange(n) |> print(n=50)
-coho_data_tbl |> filter(StockID == 157) |> print(n=50) #missing 2000 & 2001
-coho_data_tbl |> count(pop_id, pop, StockID) |> arrange(n) |>  print(n=50)
-coho_data_tbl |> filter(StockID == 81) |> print(n=50) #missing 1996
-
-
-
-
-# fit_ar1_pred <- 
-summary(fit_ar1, pars = "adult_pred")$summary |>
+fit_ar1_pred <- summary(fit_ar1, pars = "adult_pred")$summary |>
   as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
   mutate(
     var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
