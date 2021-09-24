@@ -1,6 +1,6 @@
 ---
 title: "stipm"
-author: "dan.auerbach@dfw.wa.gov modifying DeFilippo et al. 2021 in consultation with Thomas.Buehrens@dfw.wa.gov"
+author: "Dan.Auerbach@dfw.wa.gov, Thomas.Buehrens@dfw.wa.gov, and Neala.Kendall@dfw.wa.gov" 
 date: "`r Sys.Date()`"
 editor_options: 
   chunk_output_type: console
@@ -9,12 +9,21 @@ output:
 
 ---
 
-This script updates and extends the [original implementation](https://github.com/lukasdefilippo/ST-IPM) of [DeFilippo et al.'s (2021)](https://www.sciencedirect.com/science/article/pii/S0165783621001429) "Spatiotemporal Integrated Population Model" (ST-IPM) of Washington state natural origin coho (*O. kisutch*) returns, with initial application to annual preseason forecasts of Willapa Bay returning adults.
+# Summary
 
-# setup
+The Pacific Fishery Management Council (PFMC) reviews annual catch limits (ACLs, equivalent to acceptable biological catch or ABC) for the Willapa Bay natural coho [stock aggregate](https://www.pcouncil.org/documents/2021/02/e-3-situation-summary-review-of-2020-fisheries-and-summary-of-2021-stock-forecasts.pdf/). As part of this process, the PFMC's Scientific and Statistical Committee ([SSC](https://www.pcouncil.org/navigating-the-council/membership-groups-and-staff/advisory-groups/scientific-and-statistical-committee-ssc/)) evaluates the methods used to develop forecasts.
+
+This script presents a new framework that the Washington Department of Fish and Wildlife (WDFW) proposes to use for preseason forecasts of Willapa Bay natural coho. The proposed approach leverages multiple data sources while rigorously depicting process and observation uncertainty, and it examines predictive skill with measures based on one-ahead tests to replicate real-world data conditions. As a central element of this framework, the code below updates and extends the [original implementation](https://github.com/lukasdefilippo/ST-IPM) of [DeFilippo et al.'s (2021)](https://www.sciencedirect.com/science/article/pii/S0165783621001429) "Spatiotemporal Integrated Population Model" (ST-IPM) of Washington state natural origin coho (*O. kisutch*) returns. This peer-reviewed, state-of-the-science ST-IPM is built around existing management units in the Coho Fishery Regulation and Assessment Model ([coho FRAM](https://framverse.github.io/fram_doc/calcs_data_coho.html)) and is well integrated with the data compilation and reporting workflows and timelines of PFMC (and the Coho Technical Committee of the Pacific Salmon Commission). For Willapa Bay (WB), the proposed approach incorporates both WB-specific natural origin return data and WB hatchery origin marine survival, alongside smolt outmigrant, survival and return data from the Chehalis Basin and other WA coastal stocks.
+
+Estimated returns of WB natural coho (i.e., spawning escapement plus fishery catches) have shown substantial annual and longer-term fluctuations, posing a challenge to accurate preseason forecasts based on any method. For example, over the last decade, the population has exhibited both a major declining trend (from an average of ~108K in 2009-10 to ~18K in 2018-19) as well as dramatic year on year reversals (from ~96K in 2014 to ~19K in 2015). This difficult context heightens the importance of applying forecast methods that provide fishery managers with more than a single point estimate, and that can supply additional information to quantify relative risks of alternative decisions. 
+
+
+# Setup
+
+The following code readies the R environment (`r sessionInfo()$R.version$version.string`), calling necessary packages and loading an initial, complete dataset.
 
 ```{r setup, results = FALSE, warning = FALSE, message = FALSE}
-knitr::opts_chunk$set(echo = TRUE, results = FALSE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(echo = TRUE, results = FALSE, warning = FALSE, message = FALSE, fig.width = 9, fig.height = 9)
 
 library("tidyverse")
 library("gt")
@@ -49,22 +58,57 @@ sf_coord <- coho_data_tbl |>
   sf::st_as_sf(coords = c("lon", 'lat'), crs = sf::st_crs("+proj=longlat +datum=WGS84")) |> 
   sf::st_transform(crs = sf::st_crs("+proj=utm +zone=10T ellps=WGS84"))
 
-# ggplot(sf_coord) + geom_sf(aes(color = hab_km, size = hab_km)) + geom_sf_text(aes(label = pop_id))
-
-
 ##load("stipm.Rdata")
 
 ```
 
-# data
+# Data
 
-The analysis relies on per-stock escapement and harvest estimates compiled in post-season [coho FRAM](https://github.com/FRAMverse/fram_doc) runs as well as CWT-based marine survival estimates derived from RMIS, and smolt trap outmigrant estimates compiled by WDFW.
+The analysis relies on per-stock escapement and harvest estimates compiled in post-season coho FRAM runs, as well as CWT-based marine survival estimates derived from RMIS, and smolt trap outmigrant estimates compiled by WDFW. The full set of stocks included in the dataset are shown below.
+
+```{r population_map}
+## figure out an enlarged bounding box
+# coho_data_tbl |> 
+#   distinct(StockID, StockLongName, pop_id, pop, lon, lat, hab_km) |> 
+#   sf::st_as_sf(coords = c("lon", 'lat'), crs = sf::st_crs("+proj=longlat +datum=WGS84")) |>
+#   sf::st_bbox()
+
+sf::st_bbox(c(xmin = -126, ymin = 46, xmax = -120, ymax = 50), crs = sf::st_crs("+proj=longlat +datum=WGS84")) |> 
+  basemaps::basemap_ggplot(map_service = "esri", map_type = "world_imagery") +
+  geom_sf(data = sf::st_transform(sf_coord, crs = sf::st_crs(3857)), color = "orange") +
+  ggrepel::geom_text_repel(
+    data = sf_coord |> mutate(pop = str_remove(pop, "Natural|Wild")) |> sf::st_transform(crs = sf::st_crs(3857)),
+    aes(label = paste(StockID, pop, sep = ":"), geometry = geometry),
+    stat = "sf_coordinates", color = "orange") +
+  coord_sf()
+
+# #simple greyscale options without cleaned up labels
+# coho_data_tbl |> 
+#   distinct(StockID, StockLongName, pop_id, pop, lon, lat, hab_km) |> 
+#   ggplot(aes(lon, lat)) + 
+#   geom_point(aes(size = hab_km)) + 
+#   geom_text(aes(label = paste(StockID, pop, sep = ":")), check_overlap = T) +
+#   #borders("county", regions = "washington") +
+#   borders("state", regions = "washington") +
+#   coord_map("conic", lat0 = 46, xlim = c(-125.5, -121))
+# ggplot() +
+#   geom_sf(data = USAboundaries::us_states(states = "WA") |>
+#             sf::st_transform(crs = sf::st_crs(sf_coord)) |>
+#             sf::st_crop(xmin = 376000, ymin = 5172000, xmax = 560000, ymax = 5404000), #sf::st_bbox(sf_coord)
+#           aes(label = name)) +
+#   geom_sf(data = sf_coord, aes(size = hab_km)) +
+#   geom_sf_text(data = sf_coord, aes(label = paste(StockID, pop, sep = ":")), check_overlap = T)
+
+```
+
 
 ## FRAM postseason estimates of spawning escapement and harvest mortality
 
 Coho FRAM tracks age 3 fish across 5 time steps corresponding to a calendar year. It includes unmarked and marked units of both natural and hatchery stocks. 
 
-Data in the best available database extend to 1986, but all values prior to 1998 and some prior to 2004 are of unknown origin.
+Data in the best available database extend to 1986, but note that values prior to 1998 are of unknown origin.
+
+The following code chunks demonstrate a reproducible extraction of the necessary datasets. Note that the `read_` functions require a database maintained by PSC CoTC.
 
 ```{r fram_readers, eval=FALSE}
 read_coho_backwards <- function (db, runs = NULL, stocks = NULL) {
@@ -177,10 +221,9 @@ write_csv(fram, "data/postseason_fram_spwn_hvst_ests.csv")
 
 ## Smolt outmigrant estimates
 
-Dataset updated by Marisa Litz.
+Smolt trap estimates are included from a dataset maintained by Marisa Litz (WDFW).
 
 ```{r request_to_ML, eval=FALSE}
-
 #tbl_coho |> filter(!is.na(`Smolt Abundance`), year >= 1986) |> count(pop)
 
 smolt_used <- stan_data_filter(coho_data_tbl, year_min = 1986, year_max = 2021, lag_spwn = 1, lag_hvst = 1) |> 
@@ -258,7 +301,7 @@ full_join(
 
 ## Marine survival CWT releases and recoveries
 
-Dataset updated by Neala Kendall and Ty Garber, following fix of RMIS release count error for tagged wild units. Prior dataset was unaffected because 1) error not present in hatchery units 2) previous wild unit values drawn from underlying pre-RMIS data. 
+Estimates of marine survival are included via records of coded wire tagged fish releases and recoveries. This dataset was updated by Neala Kendall and Ty Garber, following fix of RMIS release count error for tagged wild units. (Note the original dataset was unaffected because 1) error not present in hatchery units 2) previous wild unit values drawn from underlying pre-RMIS data.)
 
 ```{r cwt_rec_rel_update_checks_export, eval=FALSE}
 # #strings match and all 15 units used in analysis are present
@@ -318,7 +361,9 @@ cwt |>
 
 ```
 
-## full dataset
+## Combined into full dataset
+
+This first chunk can/shoud be deleted on finalization; reproduces original data object in a tidy pipe.
 
 ```{r tbl_coho_full, eval=FALSE}
 # #still retaining for now to avoid having to root through commits for any questions
@@ -443,9 +488,9 @@ write_csv(coho_data_tbl, "data/fram_cwt_smolt_fulljoin.csv")
 
 \
 
-# model fitting
+# Model fitting
 
-The STIPM and AR1 stan models are first repeatedly fit to progressive subsets of the data filtered by year in order to gauge *as applied* forecast skill. Rather than a "sliding window" (e.g., the prior 10 years stepped forward each year), the dataset is "stretched" from a fixed starting year. Although older observations may have less immediate relevance to current conditions, this approach allows the MCMC sampler to explore a larger parameter space for posterior distributions. Future work could compare skill with a sliding alternative to test the hypothesis that a more constrained but more recent span of years could improve prediction.
+Models are first fit to progressive subsets of the data filtered by year in order to gauge *as applied* forecast skill. Rather than a "sliding window" (e.g., the prior 10 years stepped forward each year), the dataset is "stretched" from a fixed starting year. Although older observations may have less immediate relevance to current conditions, this approach allows the MCMC sampler to explore a larger parameter space for posterior distributions. Future work could compare skill with a sliding alternative to test the hypothesis that a more constrained but more recent span of years could improve prediction.
 
 In practice, the data available to forecast a given year return may be limited to observations from one, two or even three years prior. These lags can vary by data type and source.
 
@@ -457,11 +502,11 @@ For example, a 2022 preseason forecast, made in January of 2022, would likely ha
     - 2020 estimates exist and are being compiled for Jan/Feb CoTC post-season runs
     - preliminary 2021 escapement estimates may be available, but will still be in review and undergoing regional QAQC
     
-Accordingly, the process here examines 2 likely dataset scenarios for a forecast targeting year $y$:
+Accordingly, the process here examines likely dataset scenarios for a forecast targeting year $y$:
   - STIPM: $smolt_{y-1}$, $MS_{y-2}$, $spwn_{y-2}, hvst_{y-2}$ or $spwn_{y-3}, hvst_{y-3}$
   - AR1: $spwn_{y-2}, hvst_{y-2}$ or $spwn_{y-3}, hvst_{y-3}$
 
-## stan functions
+## `stan` functions
 
 A helper function trims years from the complete dataset according to arguments controlling the data-type-specific lag from a data `year_max` corresponding to the year before the desired forecast year (i.e., a `year_max` of 2021 designates the most recent possible data for the 2022 forecast). 
 
@@ -540,8 +585,6 @@ stan_ar1 <- function(stan_data, n_iter = 200, n_chain = 2){
 
 ```
 
-**Could get `stream_dist` from LU or sf_coord? Other fixed values here? As above, could avoid call to global `tbl_coho` for n_pop**
-
 ```{r stipm_functions}
 stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
   #note n_year does not include "+1" of AR1 since adult_pred is calc'd separately as
@@ -611,12 +654,12 @@ stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
 }
 ```
 
-## oat
+## One-ahead *post-hoc* forecast
+
+The one-at-a-time model fitting proceeds by iterating through a vector of "max data years", predicting the following year by first filtering down a subset of the estimation data, then calling the stan models, and then extracting diagnostic and posterior results.  
 
 ```{r oat, eval=FALSE}
-#verbose/redundant chunk, but explicit _lag2 and _lag1 for certainty/clarity
 #intermediary single year output is saved out within map() in case of loop disruptions
-
 #a dataset year_max of 2014, predicting 2015, with default lags of 2 gives FRAM/spwn through 2012
 #but with "compiling" lags of 1 gives FRAM/spwn through 2013
 
@@ -682,79 +725,11 @@ oat_lag2 <- oat_wrap(iter = 3000, chain = 4, oat_year_min = 1998, oat_years_max 
 oat_lag1 <- oat_wrap(iter = 3000, chain = 4, oat_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 1, lag_hvst = 1, lag_MS = 1, lag_smolt = 0)
 oat_lag0 <- oat_wrap(iter = 3000, chain = 4, oat_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 0, lag_hvst = 0, lag_MS = 1, lag_smolt = 0)
 
-
-# oat <- bind_rows(
-#   bind_rows(oat_lag2) |> mutate(lag = "l2")
-#   ,
-#   bind_rows(oat_lag1) |> mutate(lag = "l1")
-# )
-# 
-# saveRDS(oat, "oat_fits/oat_l2_l1_2010_2018.rds")
-
 ```
 
-## REVISE full dataset
+# Results
 
-Needs review 
-
-```{r full_data}
-iter <- 200
-chain <- 2
-year_min <- 1998
-year_max <- 2010
-
-(stan_data_list <- stan_data_filter(coho_data_tbl, 
-                                   year_min = year_min, 
-                                   year_max = year_max,
-                                   lag_spwn = 0, lag_hvst = 0))
-str(stan_data_list, max.level = 1)
-print(stan_data_list$y_min_max)
-print(c("smolt", range(stan_data_list$smolt$year)))
-print(c("MS", range(stan_data_list$MS$year)))
-print(c("spwn", range(stan_data_list$spwn$year)))
-print(c("hvst", range(stan_data_list$hvst$year)))
-print(c("rtrn", range(stan_data_list$rtrn$year)))
-
-fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
-
-#Grays Hbr Misc 16/157 missing 2000 & 2001 in FRAM data
-stan_data_list$rtrn |> count(pop_id, pop, StockID) |> arrange(n) |> print(n=50)
-coho_data_tbl |> filter(StockID == 157) |> print(n=50) #missing 2000 & 2001
-coho_data_tbl |> count(pop_id, pop, StockID) |> arrange(n) |>  print(n=50)
-coho_data_tbl |> filter(StockID == 81) |> print(n=50) #missing 1996
-
-
-# fit_ar1_pred <- 
-summary(fit_ar1, pars = "adult_pred")$summary |>
-  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
-  mutate(
-    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-    pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-    year = last(stan_data_list$y_min_max) + 1, #should be x+1
-    mod = "ar1",
-    n_diverg = get_sampler_params(fit_ar1, inc_warmup = FALSE) |> 
-      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
-  ) |>
-  left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
-
-fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
-
-fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
-  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
-  mutate(
-    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-    pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-    year = last(stan_data_list$y_min_max) + 1, #should be x+1
-    mod = "stipm",
-    n_diverg = get_sampler_params(fit_stipm, inc_warmup = FALSE) |> 
-      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
-  ) |>
-  left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
-
-```
-
-
-# results
+Saved output from the OAT runs is read back into memory and joined with observations to allow examination of performance skill.
 
 ```{r read_oat_and_oat_obs}
 # #tibbles of annual predictions for AR1 & STIPM with a given lag 
@@ -789,11 +764,10 @@ oat_obs <- left_join(
   mutate(
     in_50 = (rtrn >= `25%`) & (rtrn <= `75%`),
     in_95 = (rtrn >= `2.5%`) & (rtrn <= `97.5%`),
-    #negative is overforecast, "fewer returned than predicted"
-    #positive is underforecast, 
-    err = rtrn - `50%`, 
+    #convention: positive as overforecast ("fewer returned than predicted"), negative underforecast 
+    err = `50%` - rtrn, 
     err_abs = abs(err),
-    err_log = log(rtrn) - log(`50%`),
+    err_log = log(`50%`) - log(rtrn),
     err_pct = err / rtrn,
     err_abs_pct = err_abs / rtrn,
     #kept as Eq26 in paper with pred-obs
@@ -802,8 +776,34 @@ oat_obs <- left_join(
 )
 ```
 
+Deterministic trailing means - Not sure we want/need this?
 
-## diagnostics
+```{r trailing_means}
+#create a temp col of the best case values that would be available in a given forecast year (i.e., up to year - 1)
+#use slider to create rolling mean over 3 and 5 prior values
+#this probably provides more recent return data than would truly be available...
+rtrn_mu <- coho_data_tbl |> 
+  select(StockID, pop_id, pop, year, rtrn) |>
+  group_by(StockID, pop_id, pop) |> 
+  mutate(
+    rtrn_avail = c(NA, head(rtrn, -1)),
+    rtrn_mu_3 = slider::slide_dbl(rtrn_avail, mean, .before = 2),
+    rtrn_mu_5 = slider::slide_dbl(rtrn_avail, mean, .before = 4)
+  ) |> 
+  ungroup() |> 
+  filter(year >= 2009) |> select(-rtrn_avail) |>  
+  pivot_longer(cols = contains("rtrn_mu"), names_to = "lag_mod", values_to = "50%") |> 
+  mutate(
+    err = `50%` - rtrn, 
+    err_abs = abs(err),
+    err_log = log(`50%`) - log(rtrn),
+    err_pct = err / rtrn,
+    err_abs_pct = err_abs / rtrn,
+  )
+
+```
+
+## Diagnostics
 
 ```{r oat_rhat_neff_n_diverg}
 #all years, all pops
@@ -823,17 +823,19 @@ oat |>
     Rhat_med = median(Rhat), Rhat_max = max(Rhat),
     n_eff_med = median(n_eff), n_eff_min = min(n_eff),
     .groups = "drop") |> 
-  # gt::gt(rowname_col = "lag_mod") |> 
-  # gt::tab_header(title = "One-ahead Rhat and effective draws", subtitle = "Willapa Bay Natural") |> 
-  # gt::fmt_number(contains("Rhat"), decimals = 2) |> 
-  # gt::fmt_number(contains("n_eff"), decimals = 0)
-  print(n = 80)
+  #  print(n = 100)
+  gt::gt(rowname_col = "lag_mod") |>
+  gt::tab_header(title = "One-ahead Rhat and effective draws", subtitle = "Willapa Bay Natural") |>
+  gt::fmt_number(contains("Rhat"), decimals = 2) |>
+  gt::fmt_number(contains("n_eff"), decimals = 0)
 
 #Willapa, all years, similar to "all pops"
 #no diffs between lags for Rhat
 oat |> 
   filter(StockID == 161) |> 
-  #arrange(year, lag_mod) |> filter(str_detect(lag_mod, "stipm")) |> print(n = 100)
+  # arrange(lag_mod, year) |>
+  # #filter(str_detect(lag_mod, "stipm")) |> 
+  # print(n = 100)
   group_by(lag_mod) |> 
   summarise(
     n_diverg = max(n_diverg),
@@ -855,21 +857,134 @@ oat |>
   filter(StockID == 161, str_detect(lag_mod, "stipm")) |> 
   ggplot(aes(factor(year), n_eff, fill = lag_mod)) + geom_col(position = "dodge") + scale_fill_grey()
 
-
 ```
 
 
-## performance
+## One-ahead Performance
 
-```{r}
+```{r wb_plots}
+#error: pred - obs, 
+oat_obs |> filter(StockID == 161) |> 
+  ggplot(aes(year, err)) + geom_col() + facet_wrap(~lag_mod, ncol = 2)
+
+#percent error
+oat_obs |> filter(StockID == 161) |> 
+  ggplot(aes(year, err_pct)) + geom_col() + facet_wrap(~lag_mod, ncol = 2)
+
+pre_oat <- coho_data_tbl |> filter(between(year, 1998, 2008)) |> select(year, StockID, pop, rtrn)
+coho_data_tbl |> filter(StockID == 161, between(year, 2009, 2010)) |> summarise(rtrn = mean(rtrn)) #108082
+coho_data_tbl |> filter(StockID == 161, between(year, 2018, 2019)) |> summarise(rtrn = mean(rtrn)) #18212
+#pred lines on obs cols
+oat_obs |> filter(StockID == 161) |> 
+  ggplot(aes(year)) + 
+  geom_col(data = filter(pre_oat, StockID == 161), aes(y = rtrn), fill = grey(0.8)) +
+  geom_col(aes(y = rtrn)) +
+  geom_line(aes(y = `50%`), color = 4, size = 1.2) + 
+  annotate("text", x = 2011, y = 110000, label = "avg 108K\n2009-10", hjust = 0) +
+  annotate("text", x = 2017, y = 70000, label = "avg 18K\n2018-19", hjust = 0) +
+  facet_wrap(~lag_mod, ncol = 2)
+
+#same thing, lags as color
+#pred lines on obs cols
+oat_obs |> filter(StockID == 161) |> 
+  separate(lag_mod, c("lag", "mod")) |> 
+  ggplot(aes(year)) + 
+  geom_col(data = coho_data_tbl |> filter(StockID == 161, between(year, 1998, 2008)) |> select(year, StockID, pop, rtrn), aes(y = rtrn), fill = grey(0.8)) +
+  geom_col(data = coho_data_tbl |> filter(StockID == 161, between(year, 2009, 2019)) |> select(year, StockID, pop, rtrn), aes(y = rtrn)) +
+  geom_line(aes(y = `50%`, color = lag), size = 1.2) + 
+  annotate("text", x = 2011, y = 110000, label = "avg 108K\n2009-10", hjust = 0) +
+  annotate("text", x = 2017, y = 70000, label = "avg 18K\n2018-19", hjust = 0) +
+  facet_wrap(~mod, ncol = 1)
+
+
+#scatter showing 50+IQR
+oat_obs |> filter(StockID == 161) |> 
+  ggplot(aes(rtrn, `50%`, label = year)) + 
+  geom_abline(slope = 1, intercept = 0) +
+  geom_point() + 
+  geom_pointrange(aes(ymin = `25%`, ymax = `75%`)) +
+  geom_text(hjust = -0.2) + 
+  scale_x_continuous(limits = c(0, 150000), labels = scales::comma) +
+  scale_y_continuous("One-ahead forecast", limits = c(0, 150000), labels = scales::comma) +
+  facet_wrap(~lag_mod, ncol = 2)
+
+#scatter illustrating relative over/underprediction at different posterior percentiles
+oat_obs |> filter(StockID == 161) |> 
+  select(lag_mod, year, StockID, pop, rtrn:`75%`) |> 
+  #filter(str_detect(lag_mod, "l1_stipm|l2_stipm")) |> 
+  filter(str_detect(lag_mod, "tipm")) |> 
+  pivot_longer(cols = `2.5%`:`75%`, names_to = "pctnl", values_to = "pred") |> 
+  ggplot(aes(rtrn, pred, label = year)) + 
+  geom_abline(slope = 1, intercept = 0) +
+  geom_point() + geom_text() + 
+  scale_x_continuous(limits = c(0, 150000), labels = scales::comma) +
+  scale_y_continuous(limits = c(0, 150000), labels = scales::comma) +
+  facet_wrap(~lag_mod+pctnl, ncol = 4)
+
+#focus on highly conservative scatter on worst case data lag
+oat_obs |> filter(StockID == 161) |> 
+  filter(str_detect(lag_mod, "l2_stipm")) |> 
+  ggplot(aes(rtrn, `2.5%`, label = year)) + 
+  geom_abline(slope = 1, intercept = 0) +
+  geom_point() + geom_text() + 
+  scale_x_continuous(limits = c(0, 120000), labels = scales::comma) +
+  scale_y_continuous(limits = c(0, 75000), labels = scales::comma) +
+  facet_wrap(~lag_mod, ncol = 2)
+
+```
+
+```{r starting_to_compare_trailing_mean}
+oat_obs |> filter(StockID == 161) |> filter(str_detect(lag_mod, "stipm"))  |> print(n=100)
+rtrn_mu |> filter(StockID == 161) |> arrange(lag_mod, year) |> print(n=100)
+
+bind_rows(
+  oat_obs |> 
+    group_by(StockID, pop_id, pop, lag_mod) |> 
+    summarise(across(err:mase, list(mean = ~mean(.), median = ~median(.))), .groups = "drop") |> 
+    select(StockID:lag_mod, contains("median"), contains("mean")) |> 
+    filter(StockID == 161) |> 
+    filter(str_detect(lag_mod, "stipm"))
+  ,
+  rtrn_mu |> 
+    group_by(StockID, pop_id, pop, lag_mod) |> 
+    summarise(across(err:err_abs_pct, list(mean = ~mean(.), median = ~median(.))), .groups = "drop") |> 
+    select(StockID:lag_mod, contains("median"), contains("mean")) |> 
+    filter(StockID == 161) 
+) |> 
+  gt::gt()
+```
+
+```{r first_look_other_pops}
+pops <- c(161, 149, 145, 153, 23, 35)
+
 oat_obs |> 
-  filter(StockID == 161, str_detect(lag_mod, "stipm")) |> 
+  filter(StockID %in% pops, lag_mod == "l2_stipm") |> 
+  ggplot(aes(rtrn, `50%`, label = year)) + 
+  geom_abline(slope = 1, intercept = 0) +
+  geom_point() + 
+  geom_pointrange(aes(ymin = `25%`, ymax = `75%`)) +
+  geom_text(hjust = -0.2) + 
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous("One-ahead forecast", labels = scales::comma) +
+  facet_wrap(~StockID+pop, ncol = 2, scales = "free") +
+  labs(subtitle = "l2_stipm, 50th + IQR on 1:1")
+
+oat_obs |> 
+  filter(StockID %in% pops, lag_mod == "l2_stipm") |> 
+  ggplot(aes(year, group = StockID)) + 
+  geom_col(data = filter(pre_oat, StockID %in% pops), aes(y = rtrn), fill = grey(0.8)) +
+  geom_col(aes(y = rtrn)) +
+  geom_line(aes(y = `50%`), color = 4, size = 1.2) + 
+  facet_wrap(~StockID+pop, ncol = 2, scales = "free")
+
+
 
 ```
 
 
+### clean up
 
-```{r oat_obs_mase_by_lag}
+```{r oat_obs_mase_by_lag, eval=FALSE}
 #MASE ratios by lag
 oat_obs |> 
   select(pop_id, pop, lag_mod, year, mase) |>
@@ -891,7 +1006,7 @@ oat_obs |>
 
 ```
 
-```{r oat_obs_l1_vs_l2_stipm}
+```{r oat_obs_l1_vs_l2_stipm, eval=FALSE}
 # #WB focus
 # coho_data_tbl |> filter(pop_id == 34) |> select(pop_id:StockID, year, spwn, hvst, rtrn) |> print(n = 50)
 # oat_obs |> filter(pop_id == 34) |> filter(str_detect(lag_mod, "stipm"))
@@ -909,7 +1024,7 @@ oat_obs |>
   summary_rows(groups = TRUE, fns = list(min = ~min(.), med = ~median(.), max = ~max(.)))
 ```
 
-```{r oat_obs_ar1_vs_stipm_l1}
+```{r oat_obs_ar1_vs_stipm_l1, eval=FALSE}
 #compare STIPM vs AR1 lag1    
 oat_obs |> 
   select(pop_id, lag_mod, year, rtrn:`90%`, err:mase, in_10_90) |>
@@ -923,14 +1038,12 @@ oat_obs |>
   summary_rows(groups = TRUE, fns = list(min = ~min(.), med = ~median(.), max = ~max(.)))
 ```
 
-
-```{r odds_and_ends}
+```{r odds_and_ends, eval=FALSE}
 # rr <- bind_cols(
 #   readxl::read_excel("O:/code/coho/forecast_wb/2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", range = "RR!C38:C48", col_names = "year"),
 #   readxl::read_excel("O:/code/coho/forecast_wb/2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", range = "RR!E38:E48", col_names = "escp"),
 #   readxl::read_excel("O:/code/coho/forecast_wb/2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", range = "RR!U38:U48", col_names = "catch")) |> 
 #   mutate(trs = escp + catch)
-
 
 
 #all years, all pops
@@ -968,23 +1081,10 @@ oat_obs |>
 # oat_obs |> arrange(mod, year) |> 
 #   filter(pop_id == 34) |> select(mod, year, rtrn, `10%`:`90%`, err:err_abs_pct) |> group_by(mod) |> summarise(across(err:err_abs_pct, median))
 
-#the large returns in 2009 & 2010 seem to predispose overforecasts in 17 & 18
-#ar1 bad but better than stipm in 2015
-oat_obs |> 
-  filter(pop_id > 30) |> 
-  filter(pop_id == 34) |> 
-  ggplot(aes(x = year, fill = lag_mod, color = lag_mod)) +
-  scale_y_continuous("Return", labels = scales::comma) +
-  wacolors::scale_fill_wa_d(aesthetics = c("fill", "color")) +
-  geom_ribbon(aes(ymin = `10%`, ymax = `90%`), alpha = 0.2) + 
-  geom_line(aes(y = `50%`)) +
-  geom_point(aes(y = rtrn), color = 1)  +
-  facet_wrap(~pop+lag_mod, scales = "free")
 ```
 
-## forecasts
 
-```{r oat_obs_pred_patchwork}
+```{r oat_obs_pred_patchwork, eval=FALSE}
 set_names(2009:2017) |> 
   map(function(x) {
     d <- coho_data_tbl |> filter(pop_id == 34, between(year, 1998, x)) |> select(year, pop_id, rtrn) |> mutate(year = as.character(year))
@@ -1004,7 +1104,7 @@ set_names(2009:2017) |>
 }) |> patchwork::wrap_plots(ncol = 1)
 ```
 
-```{r oat_obs_pred_gganimate}
+```{r oat_obs_pred_gganimate, eval=FALSE}
 animate(
   set_names(2009:2017) |> 
     map_df(function(x) {
@@ -1043,89 +1143,68 @@ anim_save("oat_l1_anim.gif")
 
 ```
 
+# REVISE Full dataset
+
+```{r full_data, eval=FALSE}
+iter <- 200
+chain <- 2
+year_min <- 1998
+year_max <- 2010
+
+(stan_data_list <- stan_data_filter(coho_data_tbl, 
+                                   year_min = year_min, 
+                                   year_max = year_max,
+                                   lag_spwn = 0, lag_hvst = 0))
+str(stan_data_list, max.level = 1)
+print(stan_data_list$y_min_max)
+print(c("smolt", range(stan_data_list$smolt$year)))
+print(c("MS", range(stan_data_list$MS$year)))
+print(c("spwn", range(stan_data_list$spwn$year)))
+print(c("hvst", range(stan_data_list$hvst$year)))
+print(c("rtrn", range(stan_data_list$rtrn$year)))
+
+fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
+
+#Grays Hbr Misc 16/157 missing 2000 & 2001 in FRAM data
+stan_data_list$rtrn |> count(pop_id, pop, StockID) |> arrange(n) |> print(n=50)
+coho_data_tbl |> filter(StockID == 157) |> print(n=50) #missing 2000 & 2001
+coho_data_tbl |> count(pop_id, pop, StockID) |> arrange(n) |>  print(n=50)
+coho_data_tbl |> filter(StockID == 81) |> print(n=50) #missing 1996
+
+
+
+
+# fit_ar1_pred <- 
+summary(fit_ar1, pars = "adult_pred")$summary |>
+  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+  mutate(
+    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+    pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
+    year = last(stan_data_list$y_min_max) + 1, #should be x+1
+    mod = "ar1",
+    n_diverg = get_sampler_params(fit_ar1, inc_warmup = FALSE) |> 
+      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+  ) |>
+  left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
+
+fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
+
+fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
+  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+  mutate(
+    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+    pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
+    year = last(stan_data_list$y_min_max) + 1, #should be x+1
+    mod = "stipm",
+    n_diverg = get_sampler_params(fit_stipm, inc_warmup = FALSE) |> 
+      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+  ) |>
+  left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
+
+```
+
 
 # Can delete soon
-
-## LU export
-
-Dump a file for discussion and review of included series.
-
-```{r stipm_pops, eval=FALSE}
-# tbl_coho |> 
-#   group_by(pop_id, pop) |> 
-#   summarise(
-#     year_min = min(`Calendar Year`),
-#     year_max = max(`Calendar Year`),
-#     nobs_any = n(),
-#     across(c(spwn, hvst, `Smolt Abundance`, Release_No), ~sum(!is.na(.))),
-#     .groups = "drop"
-#   ) |> #print(n = 50)
-#   ##writexl::write_xlsx("stipm_pops_crosscheck.xlsx")
-
-# #4 cases of missing KM/Lat/Long due to the orig sequence of dataset construction
-# #where a few additional records are added after joining stream lengths
-# #but expect to drop 7/7A and Pt Gamble anyway
-# #also following orig approach on "median" of Lat/Long, though already uniform 
-# #manually copied into working xlsx, leaving pop_id/pops to confirm matches before deleting
-# tbl_coho |> 
-#   filter(!is.na(KM)) |>
-#   group_by(pop_id, pop) |> 
-#   summarise(across(c(Longitude, Latitude, KM), median), .groups = "drop") |> 
-#   write.table("clipboard", row.names = F)
-
-# # add CWT marine survival info
-# tbl_coho |> 
-#   distinct(pop_id, pop,`Smolt Ocean Survival Population`, hat) |> 
-#   filter(!is.na(hat)) |> 
-#   select(pop_id, `Smolt Ocean Survival Population`, hat) |> 
-#   right_join(tibble(pop_id = 1:36), by = "pop_id") |> arrange(pop_id) |> 
-#   write.table("clipboard", row.names = F, na = "")
-
-```
-
-```{r try_tidybayes, eval=FALSE}
-#could further examine library(tidybayes)? and/or library(bayesplot)?
-library(tidybayes)
-
-fit_ar1 |> 
-  recover_types(tbl_coho_stan$rtrn) |> #not doing much since pops already numerically indexed
-  spread_draws(adult_est[y,i]) |> #TMI?
-  median_qi()
-```
-
-```{r demo_stretch_allpops, eval=FALSE}
-library(slider)
-
-#stretching: before = Inf, so cumulative
-foo <- tbl_coho_stan$rtrn |> 
-  #filter( pop_id %in% focal_popids) |> 
-  select(year, pop_id, pop, rtrn) |>
-  group_by(pop_id, pop) |> 
-  mutate(
-    rtrn_mu_cml = slide_dbl(rtrn, mean, .before = Inf),
-    lm_fit = slide(
-      .x = cur_data(), #the subset of rows
-      .f = ~lm(rtrn ~ year, data = .x), #the thing to do to them
-      .before = Inf, #how far back to look
-      .complete = T
-    ),
-    lm_pred = lm_fit |> 
-      map_dbl(~if_else(is.null(.x), NA_real_, last(.x$fitted.values)))
-  ) |> 
-  ungroup()
-
-foo |> 
-  select(-lm_fit) |> 
-  filter(pop_id > 30) |> #reduce for plotting 
-  pivot_longer(cols = -c(year, pop_id, pop), names_to = "var", values_to = "val") |> 
-  {\(x) 
-  ggplot(x, aes(year, val, color = var)) +
-  geom_line(data = filter(x, var != "rtrn")) +
-  geom_point(data = filter(x, var == "rtrn")) + 
-  scale_x_continuous(n.breaks = 10,  guide = guide_axis(n.dodge = 2)) +
-  facet_wrap(~pop_id, scales = "free", ncol = 1)
-  }()
-```
 
 ```{r test_2050s, eval=FALSE}
 #further into future just with larger n_year? oh yes.
