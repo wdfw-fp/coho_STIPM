@@ -226,7 +226,7 @@ Smolt trap estimates are included from a dataset maintained by Marisa Litz (WDFW
 ```{r request_to_ML, eval=FALSE}
 #tbl_coho |> filter(!is.na(`Smolt Abundance`), year >= 1986) |> count(pop)
 
-smolt_used <- stan_data_filter(coho_data_tbl, year_min = 1986, year_max = 2021, lag_spwn = 1, lag_hvst = 1) |> 
+smolt_used <- stan_data_filter(coho_data_tbl, data_year_min = 1986, data_year_max = 2021, lag_spwn = 1, lag_hvst = 1) |> 
   getElement("smolt") 
 #writexl::write_xlsx(smolt_used, "O:/code/coho/forecast_wb/smolt_outmig_to_update.xlsx")
 
@@ -508,44 +508,37 @@ Accordingly, the process here examines likely dataset scenarios for a forecast t
 
 ## `stan` functions
 
-A helper function trims years from the complete dataset according to arguments controlling the data-type-specific lag from a data `year_max` corresponding to the year before the desired forecast year (i.e., a `year_max` of 2021 designates the most recent possible data for the 2022 forecast). 
+A helper function trims years from the complete dataset according to arguments controlling the data-type-specific lag from a data `data_year_max` corresponding to the year before the desired forecast year (i.e., a `data_year_max` of 2021 designates the most recent possible data for the 2022 forecast). 
 
 ```{r stan_data_filter}
 #trim years then declare separate intermediaries
-#"year_max" is "last/max year of available data", so desired year_pred-1
+#"data_year_max" is "last/max year of available data", so desired year_pred-1
 #lags allow for flexible OAT configurations with additional trimming
 #but can be zeroed to allow all available data
 #for a 2022 forecast in adult_pred vectors from stan
-#year_max is 2021, s.t. firmly available postseason FRAM is 2019 
+#data_year_max is 2021, s.t. firmly available postseason FRAM is 2019 
 stan_data_filter <- function(
   full, #complete dataset
-  year_min, #starting anchor year
-  #in STIPM, adult_pred[year_max+1] is a total return from smolt[year_max]*surv[year_max], with adult_est[year_max] as the spawning escapement
+  data_year_min, #starting anchor year
+  #in STIPM, adult_pred[data_year_max+1] is a total return from smolt[data_year_max]*surv[data_year_max], with adult_est[data_year_max] as the spawning escapement
   #in AR1, adult_est and adult_pred are total return, and adult_pred[year_pred] is same as last year of adult_est b/c passing n_year+1 relative to STIPM
-  year_max,
+  data_year_max,
   lag_smolt = 0, #n-extra-years trimmed from smolt abundances 
   lag_MS = 1, #n-extra-years trimmed from release and recovery data
   lag_spwn = 2, #n-extra-years trimmed from FRAM escapement
   lag_hvst = 2 #n-extra-years trimmed from FRAM harvest
   ){
   
-  full_ymin_ymax = filter(full, between(year, year_min, year_max)) |> 
-    mutate(yr = year - min(year) + 1)
+  full_ymin_ymax = filter(full, between(year, data_year_min, data_year_max)) |> 
+    mutate(yr = year - min(year) + 1) #reindexing for stan
   
   stan_data = list(
-    y_min_max = year_min:year_max,
-    
-    # smolt = filter(full_ymin_ymax, !is.na(`Smolt Abundance`), year <= year_max - lag_smolt),
-    # MS = filter(full_ymin_ymax, !is.na(Release_No), year <= year_max - lag_MS),
-    smolt = filter(full_ymin_ymax, !is.na(smolt), year <= year_max - lag_smolt),
-    MS = filter(full_ymin_ymax, !is.na(est_n_rec), year <= year_max - lag_MS),
-    
-    spwn = filter(full_ymin_ymax, !is.na(spwn), year <= year_max - lag_spwn),
-    hvst = filter(full_ymin_ymax, !is.na(hvst), year <= year_max - lag_hvst) |> 
-      mutate(hvst = abs(hvst)),
-    rtrn = full_ymin_ymax |> 
-      #mutate(rtrn = spwn + abs(hvst)) |>
-      filter(!is.na(rtrn), year <= year_max - max(c(lag_spwn, lag_hvst)))
+    y_min_max = data_year_min:data_year_max,
+    smolt = filter(full_ymin_ymax, !is.na(smolt), year <= data_year_max - lag_smolt),
+    MS = filter(full_ymin_ymax, !is.na(est_n_rec), year <= data_year_max - lag_MS),
+    spwn = filter(full_ymin_ymax, !is.na(spwn), year <= data_year_max - lag_spwn),
+    hvst = filter(full_ymin_ymax, !is.na(hvst), year <= data_year_max - lag_hvst),
+    rtrn = filter(full_ymin_ymax, !is.na(rtrn), year <= data_year_max - max(c(lag_spwn, lag_hvst)))
   )
   
   return(stan_data)
@@ -563,9 +556,9 @@ Next, wrappers to the `rstan::stan` function facilitate repeated fitting with co
 stan_ar1 <- function(stan_data, n_iter = 200, n_chain = 2){
   #note following orig naming convention where "tot" refers to "total return" = spwn + hvst = rtrn, as estimated from FRAM
   stan_fit <- stan(
-    file = 'LD_coho_forecast_AR_ind_2.stan',
+    file = 'LD_coho_forecast_AR_ind_2_v2.stan',
     iter = n_iter, chains = n_chain, thin = 1, seed = 222,
-    control = list(adapt_delta = 0.99, max_treedepth = 10.25),
+    control = list(adapt_delta = 0.999, max_treedepth = 12),
     data = list(
       n_year = length(stan_data$y_min_max) + 1, #sets year of adult_pred and year-dim of adult_est 
       n_pop = length(unique(coho_data_tbl$pop_id)), #number of populations in full dataset
@@ -660,12 +653,12 @@ The one-at-a-time model fitting proceeds by iterating through a vector of "max d
 
 ```{r oat, eval=FALSE}
 #intermediary single year output is saved out within map() in case of loop disruptions
-#a dataset year_max of 2014, predicting 2015, with default lags of 2 gives FRAM/spwn through 2012
+#a dataset data_year_max of 2014, predicting 2015, with default lags of 2 gives FRAM/spwn through 2012
 #but with "compiling" lags of 1 gives FRAM/spwn through 2013
 
 oat_wrap <- function(iter, #3K 
                      chain, #4
-                     oat_year_min, #1998,
+                     oat_data_year_min, #1998,
                      oat_years_max, #2008:2018, #max data year, predicting 2009:2019
                      lag_spwn, lag_hvst, lag_MS, lag_smolt #deducted from data year
                      ){
@@ -673,7 +666,7 @@ oat_wrap <- function(iter, #3K
   oat <- set_names(oat_years_max) |> 
     map(function(x) {
       print(paste("max data year", x, "predicting", x+1))
-      stan_data_list <- stan_data_filter(coho_data_tbl, year_min = oat_year_min, year_max = x, lag_spwn = lag_spwn, lag_hvst = lag_hvst, lag_MS = lag_MS, lag_smolt = lag_smolt) 
+      stan_data_list <- stan_data_filter(coho_data_tbl, data_year_min = oat_data_year_min, data_year_max = x, lag_spwn = lag_spwn, lag_hvst = lag_hvst, lag_MS = lag_MS, lag_smolt = lag_smolt) 
       print(stan_data_list$y_min_max)
       print(c("smolt", range(stan_data_list$smolt$year)))
       print(c("MS", range(stan_data_list$MS$year)))
@@ -720,10 +713,10 @@ oat_wrap <- function(iter, #3K
   return(oat)
 }
 
-#predicting 2009:2019
-oat_lag2 <- oat_wrap(iter = 3000, chain = 4, oat_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 2, lag_hvst = 2, lag_MS = 1, lag_smolt = 0)
-oat_lag1 <- oat_wrap(iter = 3000, chain = 4, oat_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 1, lag_hvst = 1, lag_MS = 1, lag_smolt = 0)
-oat_lag0 <- oat_wrap(iter = 3000, chain = 4, oat_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 0, lag_hvst = 0, lag_MS = 1, lag_smolt = 0)
+#predicting 2009:2019; renaming objects with lags relative to prediction year (rather than data year, as in args)
+oat_lag3 <- oat_wrap(iter = 3000, chain = 4, oat_data_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 2, lag_hvst = 2, lag_MS = 1, lag_smolt = 0)
+oat_lag2 <- oat_wrap(iter = 3000, chain = 4, oat_data_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 1, lag_hvst = 1, lag_MS = 1, lag_smolt = 0)
+oat_lag1 <- oat_wrap(iter = 3000, chain = 4, oat_data_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 0, lag_hvst = 0, lag_MS = 1, lag_smolt = 0)
 
 ```
 
@@ -1146,16 +1139,16 @@ anim_save("oat_l1_anim.gif")
 # REVISE Full dataset
 
 ```{r full_data, eval=FALSE}
-iter <- 200
+iter <- 300
 chain <- 2
-year_min <- 1998
-year_max <- 2010
+data_year_min <- 1998
+data_year_max <- 2010
 
 (stan_data_list <- stan_data_filter(coho_data_tbl, 
-                                   year_min = year_min, 
-                                   year_max = year_max,
+                                   data_year_min = data_year_min, 
+                                   data_year_max = data_year_max,
                                    lag_spwn = 0, lag_hvst = 0))
-str(stan_data_list, max.level = 1)
+#str(stan_data_list, max.level = 1)
 print(stan_data_list$y_min_max)
 print(c("smolt", range(stan_data_list$smolt$year)))
 print(c("MS", range(stan_data_list$MS$year)))
@@ -1165,17 +1158,7 @@ print(c("rtrn", range(stan_data_list$rtrn$year)))
 
 fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
 
-#Grays Hbr Misc 16/157 missing 2000 & 2001 in FRAM data
-stan_data_list$rtrn |> count(pop_id, pop, StockID) |> arrange(n) |> print(n=50)
-coho_data_tbl |> filter(StockID == 157) |> print(n=50) #missing 2000 & 2001
-coho_data_tbl |> count(pop_id, pop, StockID) |> arrange(n) |>  print(n=50)
-coho_data_tbl |> filter(StockID == 81) |> print(n=50) #missing 1996
-
-
-
-
-# fit_ar1_pred <- 
-summary(fit_ar1, pars = "adult_pred")$summary |>
+fit_ar1_pred <- summary(fit_ar1, pars = "adult_pred")$summary |>
   as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
   mutate(
     var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
