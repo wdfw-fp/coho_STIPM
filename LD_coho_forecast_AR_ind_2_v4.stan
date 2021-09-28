@@ -58,7 +58,7 @@ transformed parameters {////////////////////////////////////////////////////////
 	//Population-specific random walk of adult returns
 	for(i in 1:n_pop){
 	  sigma_proc[i] = sqrt(square(sigma_tot[i]) * p_proc[i]);
-	  sigma_obs[i] = sqrt(square(sigma_tot[i])* p_obs[i]);
+	  sigma_obs[i] = sqrt(square(sigma_tot[i]) * (1-p_proc[i]));
 		for(y in 1:n_year){
 			if(y==1){
 				log_adult_est[y,i] = mu[i] + init[i] * sqrt(square(sigma_proc[i])/(1-square(phi[i])));
@@ -85,8 +85,7 @@ model {/////////////////////////////////////////////////////////////////////////
   
   sigma_tot ~ std_normal();
   p_proc ~ beta(1,1);
-  p_obs ~ beta(1,1);
-    
+
   // Prior proc error sd
  	//sigma_obs ~ std_normal();
 
