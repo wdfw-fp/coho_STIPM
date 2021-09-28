@@ -129,7 +129,7 @@ stan_ar1_sim <- function(stan_data,
                          init="random",
                          warmup = 1000,
                          thin = 1,
-                         control = list(adapt_delta = 0.99, max_treedepth = 10.25)
+                         control = list(adapt_delta = 0.9, max_treedepth = 10)
                          )
   {
   #note following orig naming convention where "tot" refers to "total return" = spwn + hvst = rtrn, as estimated from FRAM
@@ -158,13 +158,13 @@ simdat<-make_sim_data(yrs = 40, pops = 2)
 fit_ar1 <- stan_ar1_sim(stan_data = simdat$stan_data,
                         modelfile = 
                         #'LD_coho_forecast_AR_ind_2.stan', #lukas original
-                        'LD_coho_forecast_AR_ind_2_v2.stan', #thomas reparam but preserve data format
+                        'LD_coho_forecast_AR_ind_2_v4.stan', #thomas reparam but preserve data format
                         #'LD_coho_forecast_AR_ind_2_v3.stan', #thomas reparam, new data format
                         n_iter = 2000,
                         n_chain = 4,
                         warmup = 1000,
                         thin = 1,
-                        control = list(adapt_delta = 0.995, max_treedepth = 11)
+                        control = list(adapt_delta = 0.99, max_treedepth = 11)
                         )
 
 #fit diagnostics
