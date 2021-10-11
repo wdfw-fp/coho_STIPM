@@ -63,7 +63,7 @@ sf_coord <- coho_data_tbl |>
 #ar1, stipm, trailing arith mean, official preseason forecast
 pal_lag_mod <- c("purple", "gold", "cyan", "pink") 
 
-##load("stipm.Rdata")
+#load("stipm_ssc_pptx.RData")
 
 ```
 
@@ -1156,21 +1156,21 @@ animate(
       ) |> 
         mutate(year_pred = x, year_data = x-3)# , across(contains("year"), as.character))
     }) |> 
-    ggplot(aes(x = year, group = year_pred)) +
+    ggplot(aes(x = year)) +
     #observed in forecast year
     geom_point(aes(y = rtrn), color = 1, shape = 17, size = 1.8)  +
     #forecasts
-    geom_pointrange(aes(y = `50%`, ymin = `2.5%`, ymax = `97.5%`, color = lag_mod), fatten = 1.02, position = position_dodge(width = 0.5), show.legend = T) +
-    geom_point(aes(y = `50%`, color = lag_mod), size = 1.2, position = position_dodge(width = 0.5), show.legend = T) +
+    geom_pointrange(aes(y = `50%`, ymin = `2.5%`, ymax = `97.5%`, color = lag_mod), fatten = 1.02, position = position_dodge2(width = 0.8), show.legend = T) +
+    geom_point(aes(y = `50%`, color = lag_mod), size = 1.2, position = position_dodge2(width = 0.8), show.legend = T) +
     #pre-forecast data
     geom_vline(aes(xintercept = year_data), linetype = "dotted", size = 1) +
-    geom_line(aes(y = obs), color = grey(0.8), size = 1) +
+    geom_line(aes(y = obs, group = year_pred), color = grey(0.8), size = 1) +
     geom_point(aes(y = obs), color = grey(0.4), size = 1) +
     geom_point(aes(y = obs, color = lag_mod), size = 0.9) +
     
-    scale_x_continuous(name = "", limits = c(1998, 2019), breaks = 1998:2019, labels = 1998:2019) +
+    scale_x_continuous(name = "", limits = c(1998, 2020), breaks = 1998:2020, labels = 1998:2020) +
     #scale_x_discrete(name = "", limits = as.character(1998:2019), drop = FALSE, guide = guide_axis(n.dodge = 2)) +
-    scale_y_continuous(name = "Return", limits = c(0,200000), labels = scales::comma) + #limits drops point error when outside ymax
+    scale_y_continuous(name = "Return", limits = c(0,350000), labels = scales::comma) + #limits drops point error when outside ymax
     scale_color_manual(name = "", values = c(pal_lag_mod, grey(0.4), grey(0.8))) +
     theme(legend.position = "top", axis.text = element_text(size = 6), axis.title = element_text(size = 5)) +
     #facet_wrap(~year_pred, ncol = 1)
