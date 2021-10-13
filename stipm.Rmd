@@ -567,7 +567,7 @@ Next, wrappers to the `rstan::stan` function facilitate repeated fitting with co
 stan_ar1 <- function(stan_data, n_iter = 200, n_chain = 2){
   #note following orig naming convention where "tot" refers to "total return" = spwn + hvst = rtrn, as estimated from FRAM
   stan_fit <- stan(
-    file = 'LD_coho_forecast_AR_ind_2_v2.stan',
+    file = 'LD_coho_forecast_AR_ind_2_v4.stan', #OAT fits for review run with _v2
     iter = n_iter, chains = n_chain, thin = 1, seed = 222,
     control = list(adapt_delta = 0.999, max_treedepth = 12),
     data = list(
@@ -1184,21 +1184,21 @@ anim_save("oat_l3_anim.gif")
 ```
 
 
+# Full dataset
 
+```{r full_data_fits, eval=FALSE}
+#use all data
+(
+  stan_data_list <- stan_data_filter(
+    coho_data_tbl, 
+    data_year_min = 1998, data_year_max = 2021, 
+    lag_smolt = 0, lag_MS = 0, lag_spwn = 0, lag_hvst = 0)
+)
 
-# REVISE/DELETE
+#construct estimates far forward by "tricking" the wrapper that sets n_year
+#expecting to retain fit objects and extract summary info differently than OAT
+stan_data_list$y_min_max <- 1998:2040
 
-```{r full_data, eval=FALSE}
-iter <- 400
-chain <- 2
-data_year_min <- 1998
-data_year_max <- 2019
-
-(stan_data_list <- stan_data_filter(coho_data_tbl, 
-                                   data_year_min = data_year_min, 
-                                   data_year_max = data_year_max,
-                                   lag_spwn = 0, lag_hvst = 0))
-#str(stan_data_list, max.level = 1)
 print(stan_data_list$y_min_max)
 print(c("smolt", range(stan_data_list$smolt$year)))
 print(c("MS", range(stan_data_list$MS$year)))
@@ -1206,36 +1206,116 @@ print(c("spwn", range(stan_data_list$spwn$year)))
 print(c("hvst", range(stan_data_list$hvst$year)))
 print(c("rtrn", range(stan_data_list$rtrn$year)))
 
-fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
+fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
+
+fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
+```
+
+
+```{r full_data_fit_summaries, eval=FALSE}
+## recall AR1 input configured as n_year+1 relative to STIPM
+## AR1 adult_est is year-indexed through n_year+1, with final vals == adult_pred
+## STIPM adult_est year indexed through n_year, with final vals != adult_pred
+## STIPM adult_pred calc'd from smolt[n_year]*surv[n_year]
+## could bring back a version of fit_smry() removed in Aug12 commit 6b0cb287df167c6b66f0647cb020221754019be7
+
+fit_ar1_adult_est <- summary(fit_ar1, pars = "adult_est")$summary |>
+  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+  mutate(
+    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+    pop_id = str_remove(stan_out, var) |> str_split(",") |> map_dbl( ~str_extract(.x[2], "[0-9]+") |> as.numeric()),
+    year = (stan_data_list$y_min_max[1] - 1) + as.numeric(str_extract(stan_out, "[0-9]{1,2}")),
+    mod = "ar1",
+    n_diverg = get_sampler_params(fit_ar1, inc_warmup = FALSE) |>
+      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+  ) |>
+  left_join(coho_data_tbl |> select(year, pop_id, pop, StockID, rtrn), by = c("year","pop_id"))
+
+fit_stipm_adult_est <- summary(fit_stipm, pars = "adult_est")$summary |>
+  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+  mutate(
+    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+    pop_id = str_remove(stan_out, var) |> str_split(",") |> map_dbl( ~str_extract(.x[2], "[0-9]+") |> as.numeric()),
+    year = (stan_data_list$y_min_max[1] - 1) + as.numeric(str_extract(stan_out, "[0-9]{1,2}")),
+    mod = "stipm",
+    n_diverg = get_sampler_params(fit_stipm, inc_warmup = FALSE) |>
+      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+  ) |>
+  left_join(coho_data_tbl |> select(year, pop_id, pop, StockID, rtrn), by = c("year","pop_id"))
 
 fit_ar1_pred <- summary(fit_ar1, pars = "adult_pred")$summary |>
   as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
   mutate(
     var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
     pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-    year = last(stan_data_list$y_min_max) + 1, #should be x+1
+    year = last(stan_data_list$y_min_max) + 1, 
     mod = "ar1",
-    n_diverg = get_sampler_params(fit_ar1, inc_warmup = FALSE) |> 
+    n_diverg = get_sampler_params(fit_ar1, inc_warmup = FALSE) |>
       map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
   ) |>
   left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
-
-fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = iter, n_chain = chain)
-
+ 
 fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
   as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
   mutate(
     var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
     pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-    year = last(stan_data_list$y_min_max) + 1, #should be x+1
+    year = last(stan_data_list$y_min_max) + 1,
     mod = "stipm",
-    n_diverg = get_sampler_params(fit_stipm, inc_warmup = FALSE) |> 
+    n_diverg = get_sampler_params(fit_stipm, inc_warmup = FALSE) |>
       map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
   ) |>
   left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
 
+fit_ar1_adult_est |> filter(pop_id == 34) |> tail(1)
+fit_ar1_pred |> filter(pop_id == 34)
+fit_stipm_adult_est |> filter(pop_id == 34) |> tail(1)
+fit_stipm_pred |> filter(pop_id == 34)
+
+
+fit_ar1_adult_est |> 
+  filter(pop_id == 34) |> 
+  ggplot(aes(x = year, fill = mod, color = mod)) +
+  scale_y_continuous("Estimated adult return", labels = scales::comma) +
+  scale_fill_manual(values = pal_lag_mod[1], aesthetics = c("fill", "color") ) +
+  geom_ribbon(aes(ymin = `2.5%`, ymax = `97.5%`), alpha = 0.2) + 
+  geom_line(aes(y = `50%`)) +
+  geom_point(aes(y = rtrn), color = 1) 
+
+bind_rows(fit_ar1_adult_est, fit_stipm_adult_est) |> 
+  filter(pop_id == 34) |> 
+  ggplot(aes(x = year, fill = mod, color = mod)) +
+  scale_y_continuous("Estimated adult return", labels = scales::comma) +
+  scale_fill_manual(values = pal_lag_mod, aesthetics = c("fill", "color") ) +
+  geom_ribbon(aes(ymin = `2.5%`, ymax = `97.5%`), alpha = 0.2) + 
+  geom_line(aes(y = `50%`), size = 1.2) +
+  geom_point(aes(y = rtrn), color = 1) 
+
+
+library(tidybayes)
+
+# #cols for n_year, n_pop
+# fit_ar1 |> 
+#   gather_draws(adult_est[n_year,n_pop])
+
+x <- spread_draws(fit_ar1, adult_est[n_year,n_pop] | n_pop) 
+
+x |> ungroup() |> 
+  select(n_year, .iteration, est = `34`) |> 
+  #count(n_year) # n = chains * post-warmup iterations
+  mutate(year = 1997+n_year) |> 
+#  filter(.iteration < 5) |> 
+  ggplot(aes(year, est)) + 
+  #stat_slab() +
+  stat_eye(point_size = 0.7, slab_fill = pal_lag_mod[1]) +
+  # #cool/pretty but take awhile
+  # stat_slab(aes(slab_alpha = stat(f))) +
+  # stat_gradientinterval() +
+  scale_y_continuous(limits = c(0,200000))
+
 ```
 
+# REVISE/DELETE
 
 ```{r wb_plots}
 #error: pred - obs, 
