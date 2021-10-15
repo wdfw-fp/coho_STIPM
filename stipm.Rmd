@@ -34,6 +34,8 @@ library("rstan")
 options(mc.cores = 10) #12 on DA machine
 rstan_options(auto_write = TRUE)
 theme_set(theme_light())
+library(tidybayes)
+library(ggridges)
 
 
 fp <- list(
@@ -1197,7 +1199,7 @@ anim_save("oat_l3_anim.gif")
 
 #construct estimates far forward by "tricking" the wrapper that sets n_year
 #expecting to retain fit objects and extract summary info differently than OAT
-stan_data_list$y_min_max <- 1998:2040
+stan_data_list$y_min_max <- 1998:2030
 
 print(stan_data_list$y_min_max)
 print(c("smolt", range(stan_data_list$smolt$year)))
@@ -1206,9 +1208,187 @@ print(c("spwn", range(stan_data_list$spwn$year)))
 print(c("hvst", range(stan_data_list$hvst$year)))
 print(c("rtrn", range(stan_data_list$rtrn$year)))
 
-fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
+# # #on AWS
+# fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 4000, n_chain = 4)
+# saveRDS(fit_stipm, "fit_stipm.rds")
+# 
+# fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 4000, n_chain = 4)
+# saveRDS(fit_ar1, "fit_ar1.rds")
 
-fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
+```
+
+```{r read_full_data_ar1, eval=FALSE}
+# #these are huge, balloons memory
+# #per year have rows = 4chains * post-warmup
+# 
+# fit_ar1 <- readRDS("O:/code/coho/forecast_wb/full_data_fit_ar1.rds")
+# 
+# fit_ar1_wb <- spread_draws(fit_ar1, adult_est[n_year,n_pop] | n_pop) |> 
+#   ungroup() |> select(n_year, .iteration, rtrn = `34`) |> 
+#   mutate(year = 1997+n_year, mod = "ar1") 
+# 
+# saveRDS(fit_ar1_wb, "fit_ar1_wb_adult_est.rds")
+# 
+# fit_stipm <- readRDS("O:/code/coho/forecast_wb/full_data_fit_stipm.rds")
+# #stipm requires constructing total return from harvest + spawning adults
+# fit_stipm_wb <- full_join(
+#   spread_draws(fit_stipm, adult_est[n_year,n_pop] | n_pop) |> 
+#     ungroup() |> select(n_year, .chain, .iteration, .draw, spwn = `34`)
+#   ,
+#   spread_draws(fit_stipm, harvest_est[n_year,n_pop] | n_pop) |> 
+#     ungroup() |> select(n_year, .chain, .iteration, .draw, hvst = `34`)
+#   ,
+#   by = c("n_year", ".chain", ".iteration", ".draw")) |> 
+#   mutate(year = 1997+n_year, rtrn = spwn+hvst, mod = "stipm")
+# 
+# saveRDS(fit_stipm_wb, "fit_stipm_wb_adult_est.rds")
+
+```
+
+```{r}
+fit_ar1_wb <- readRDS( "fit_ar1_wb_adult_est.rds")
+fit_stipm_wb <- readRDS("fit_stipm_wb_adult_est.rds")
+
+#redo as row_bound object grouped by mod
+#will need to select rtrn from stipm
+adult_est_wb <- bind_rows(fit_ar1_wb, fit_stipm_wb)
+
+
+
+fit_ar1_wb_q <- fit_ar1_wb |> 
+  group_by(year) |> 
+  summarise(across(est, list(
+    `2.5` = ~quantile(.x, 0.025),
+    `25` = ~quantile(.x, 0.25),
+    `50` = ~quantile(.x, 0.5),
+    `75` = ~quantile(.x, 0.75),
+    `97.5` = ~quantile(.x, 0.975)
+    ), .names = "{.fn}"),
+    .groups = "drop")
+
+fit_stipm_wb_q <- fit_stipm_wb |> 
+  group_by(year) |> 
+  summarise(across(est, list(
+    `2.5` = ~quantile(.x, 0.025),
+    `25` = ~quantile(.x, 0.25),
+    `50` = ~quantile(.x, 0.5),
+    `75` = ~quantile(.x, 0.75),
+    `97.5` = ~quantile(.x, 0.975)
+    ), .names = "{.fn}"),
+    .groups = "drop")
+
+
+fit_ar1_wb |> 
+fit_stipm_wb |> 
+  filter(between(year, 1998, 2022)) |> 
+  ggplot(aes(year, rtrn)) +
+  stat_lineribbon(alpha = 0.7) +
+  geom_point(
+    data = coho_data_tbl |> filter(StockID == 161, between(year, 1998, 2022)),
+    color = 1
+  ) +
+#  scale_fill_manual(values = c("#D3BEAF", "#858753", "#254029")) +
+#  scale_fill_brewer(palette = "Purples") +
+  scale_fill_manual(values = c("#FFEB70", "#FFE138", "#FFD700")) + #colorRampPalette(c("gold", "#FFEB70"))(3) |> rev()
+  scale_x_continuous("", breaks = 1998:2022, guide = guide_axis(n.dodge = 2)) +
+  scale_y_continuous("Forecast return", labels = scales::comma) +
+#  labs(title = "AR1 full dataset posterior draws", fill = "Interval")
+  labs(title = "STIPM full dataset posterior draws", fill = "Interval")
+
+#base geom_density
+fit_ar1_wb |> 
+  filter(year == 2022) |>
+  ggplot(aes(est)) +
+  geom_density() +
+  coord_cartesian(xlim = c(0, 120000)) +
+#  geom_vline(aes(xintercept = mean(est)), color = 4) +
+  geom_vline(
+    data = filter(fit_ar1_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
+    aes(xintercept = est), linetype = c("dotted", "dashed", "solid", "dashed", "dotted")
+    ) +
+  geom_text(
+    data = filter(fit_ar1_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
+    aes(x = est, y = 0, label = paste(q, round(est), sep = "%: ")), nudge_x = 4000,
+    show.legend = F) +
+  scale_x_continuous("", breaks = seq(0, 2e5, by = 2e4), guide = guide_axis(n.dodge = 2)) +
+  scale_y_continuous("Posterior draw density", labels = NULL) +
+  labs(title = "AR1 2022 posterior draws", fill = "Interval")
+
+
+#seems to need more than one yaxis factor level and boost the default "n" to get smoother lines
+fit_ar1_wb |> 
+  filter(between(year, 2010,2022)) |> 
+  ggplot(aes(x = est, y = fct_rev(factor(year)))) +
+  stat_density_ridges(
+    geom = "density_ridges_gradient", from = 0, n = 2048,
+    aes(fill = abs(0.5 - stat(ecdf))), calc_ecdf = TRUE,
+    quantile_lines = TRUE, 
+    quantiles = c(0.025, 0.25, 0.5, 0.75, 0.975),
+    show.legend = F
+    ) +
+  wacolors::scale_fill_wa_c(palette = "gorge") +
+  coord_cartesian(xlim = c(0, 120000)) +
+  scale_x_continuous("Posterior draws", labels = scales::comma) +
+  scale_y_discrete("") +
+  geom_text(
+    data = filter(fit_ar1_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
+    aes(x = est, y = 0.6, label = paste(str_sub(q, 5, 10), round(est), sep = ":")), show.legend = F)
+
+# fit_ar1_wb |> 
+#   filter(between(year, 2010,2022)) |> 
+#   ggplot(aes(x = log(est, 10), y = fct_rev(factor(year)))) +
+#   stat_density_ridges(
+#     geom = "density_ridges_gradient", 
+#     aes(fill = abs(0.5 - stat(ecdf))), calc_ecdf = TRUE,
+#     quantile_lines = TRUE, 
+#     quantiles = c(0.025, 0.25, 0.5, 0.75, 0.975),
+#     show.legend = F
+#     ) +
+#   wacolors::scale_fill_wa_c(palette = "gorge") +
+#   scale_x_continuous("Log10 posterior draws") +
+#   scale_y_discrete("")
+
+
+fit_ar1_wb |> 
+fit_stipm_wb |> 
+  filter(year == 2022) |> 
+  ggplot(aes(est)) +
+  #stat_slab()
+  stat_halfeye(
+    aes(
+      fill_ramp = stat(cut_cdf_qi(
+        cdf,.width = c(.5, .8, .95),
+        labels = scales::percent_format()))
+      ),
+    fill = "#31543B"
+    #, show.legend = F
+    ) +
+#  coord_cartesian(xlim = c(0, 120000)) +
+  coord_cartesian(xlim = c(0, 90000)) +
+  geom_vline(
+#    data = filter(fit_ar1_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
+    data = filter(fit_stipm_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
+    aes(xintercept = est), linetype = c("dotted", "dashed", "solid", "dashed", "dotted")
+  ) +
+  geom_text(
+#    data = filter(fit_ar1_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
+    data = filter(fit_stipm_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
+    aes(x = est, y = -0.03, label = paste(q, round(est), sep = "%: ")), nudge_x = 4000,
+    show.legend = F) +
+  scale_x_continuous("Forecast return", breaks = seq(0, 2e5, by = 2e4), guide = guide_axis(n.dodge = 2)) +
+  scale_y_continuous("Posterior draw density", labels = NULL) +
+  
+  ggdist::scale_fill_ramp_discrete(range = c(1, 0.2), from = "#D3BEAF", na.translate = FALSE) +
+#  labs(title = "AR1 2022 posterior draws", fill = "", fill_ramp = "Interval")
+  labs(title = "STIPM 2022 posterior draws", fill = "", fill_ramp = "Interval")
+
+bind_rows(
+fit_ar1_wb |> filter(year == 2022) |> mutate(mod = "ar1"),
+fit_stipm_wb |> filter(year == 2022) 
+)
+  ggplot(aes(est)) +
+  #stat_slab()
+
 ```
 
 
@@ -1290,28 +1470,6 @@ bind_rows(fit_ar1_adult_est, fit_stipm_adult_est) |>
   geom_ribbon(aes(ymin = `2.5%`, ymax = `97.5%`), alpha = 0.2) + 
   geom_line(aes(y = `50%`), size = 1.2) +
   geom_point(aes(y = rtrn), color = 1) 
-
-
-library(tidybayes)
-
-# #cols for n_year, n_pop
-# fit_ar1 |> 
-#   gather_draws(adult_est[n_year,n_pop])
-
-x <- spread_draws(fit_ar1, adult_est[n_year,n_pop] | n_pop) 
-
-x |> ungroup() |> 
-  select(n_year, .iteration, est = `34`) |> 
-  #count(n_year) # n = chains * post-warmup iterations
-  mutate(year = 1997+n_year) |> 
-#  filter(.iteration < 5) |> 
-  ggplot(aes(year, est)) + 
-  #stat_slab() +
-  stat_eye(point_size = 0.7, slab_fill = pal_lag_mod[1]) +
-  # #cool/pretty but take awhile
-  # stat_slab(aes(slab_alpha = stat(f))) +
-  # stat_gradientinterval() +
-  scale_y_continuous(limits = c(0,200000))
 
 ```
 
