@@ -1159,8 +1159,8 @@ perf_smry <- function(stk, summary_start_year = 2009){
 
 perf_smry(161)
 
-coho_data_tbl |> distinct(StockID) |> pluck("StockID") |> 
-  walk(~perf_smry(.x) |> gt::gtsave(paste("O:/code/coho/forecast_wb/gt_oat_summary/gt_oat_perf_measures_stk",.x, ".png"), expand = 20))
+# coho_data_tbl |> distinct(StockID) |> pluck("StockID") |> 
+#   walk(~perf_smry(.x) |> gt::gtsave(paste("O:/code/coho/forecast_wb/gt_oat_summary/gt_oat_perf_measures_stk",.x, ".png"), expand = 20))
 
 
 
