@@ -19,7 +19,7 @@ Estimated returns of WB natural coho (i.e., spawning escapement plus fishery cat
 
 # Setup
 
-The following code readies the R environment (`r sessionInfo()$R.version$version.string`), calling necessary packages and loading an initial, complete dataset.
+The following code readies the R environment (`r sessionInfo()$R.version$version.string`), calling necessary packages and loading an initial dataset.
 
 ```{r setup, results = FALSE, warning = FALSE, message = FALSE}
 knitr::opts_chunk$set(echo = TRUE, results = FALSE, warning = FALSE, message = FALSE, fig.width = 9, fig.height = 9)
@@ -28,7 +28,7 @@ library("tidyverse")
 library("gt")
 library("odbc"); library("DBI")
 library("rstan")
-options(mc.cores = 10) #12 on DA machine
+options(mc.cores = 4)
 rstan_options(auto_write = TRUE)
 theme_set(theme_light())
 library(tidybayes)
@@ -41,14 +41,15 @@ fp <- list(
   data_full = "data/fram_cwt_smolt_fulljoin.csv"
   )
 
+coho_data_tbl <- readr::read_csv(fp$data_full)
+
+
 # ## dropped FRAM StockID 13 and 43, original pop_ids 10 and 24
 # # fram_stocks <- c(105,93,89,45,51,55,75,81,61,23,149,63,107,115,111,157,97,135,153,101,69,1,85,139,131,127,145,11,17,59,35,29,117,161)
 # 
 # pop_meta <- readxl::read_excel("pop_meta.xlsx") |>
 #   dplyr::select(pop_id:hat)
 # #deleted and reindexed pop in file, no longer need: |> dplyr::filter(StockID != 13, StockID != 43)
-
-coho_data_tbl <- readr::read_csv(fp$data_full) #can explore coercing pre-1998 FRAM to NA while including older MS & smolt 
 
 sf_coord <- coho_data_tbl |> 
   distinct(StockID, StockLongName, pop_id, pop, lon, lat, hab_km) |> 
@@ -69,10 +70,6 @@ The analysis relies on per-stock escapement and harvest estimates compiled in po
 Coho FRAM tracks age 3 fish across 5 time steps corresponding to a calendar year. It includes unmarked and marked units of both natural and hatchery stocks. 
 
 Data in the best available database (maintained by PSC CoTC) extend to 1986, but note that values prior to 1998 are of unknown origin.
-
-### Coho FRAM reader functions
-
-### Execute reads
 
 ```{r read_and_export_fram_tables, eval=FALSE}
 #the relevant data are queried and re-exported as csv
@@ -370,15 +367,103 @@ write_csv(coho_data_tbl, "data/fram_cwt_smolt_fulljoin.csv")
 
 ```
 
+## TEMP adding 2022 updates
+
+Pre-CoTC 2020 escapement estimates that feed postseason BackwardsFRAM table. Not identical to forward FRAM resulting Escapement table values used in other years, but 1) should be close and 2) are what is available.
+
+```{r}
+# #unused
+# "T:/DFW-Salmon Mgmt Modeling Team - General/Escapement files/Coho/fram_coho_escapement_2022.xlsx" |> 
+#   readxl::read_excel(range = "BK2020!A6:D160")
+
+coho_data_tbl_2020 <- rows_upsert(
+  coho_data_tbl
+  ,
+  left_join(
+    coho_data_tbl |> 
+      distinct(pop_id, pop, StockID, StockLongName, lon, lat, hab_km, smolt_ocn_surv_pop, hat) |> 
+      mutate(year = 2020)
+    ,
+    readxl::read_excel(
+      "T:/DFW-Salmon Mgmt Modeling Team - General/Escapement files/Coho/fram_coho_escapement_2022.xlsx", 
+      range = "BKFRAM!A4:Y168", col_types = c("numeric", "text", rep("numeric", length(1998:2020)))) |> 
+      select(StockID = `Row Labels`, spwn = `2020`) |> 
+      mutate(year = 2020)
+    ,
+    by = c("StockID", "year")
+  )
+  ,
+  by = c("StockID", "year")
+)
+
+coho_data_tbl |> filter(year >= 2020) |> print(n=50)
+coho_data_tbl_2020 |> filter(year >= 2020) |> print(n=50)
+
+```
+
+Jan 20 2022 email from Dr. Litz: "O:/code/coho/forecast_wb/Smolt Time Series Data.csv"
+
+```{r}
+## initiated new sheet 
+# coho_data_tbl |>
+#   filter(!is.na(smolt)) |>
+#   select(year, StockID, StockLongName, smolt) |>
+#   arrange(year, StockID) |>
+#   write.csv("clipboard", row.names = F)
+
+#manually copied a few relevant 2021 values from "O:/code/coho/forecast_wb/Smolt Time Series Data.csv"
+#updated Nooksack 2018-2020
+#added Chehalis (backcalc'd) and Queets+Clearwater from email text
+#no 2020 for Sno, Deschutes, Chehalis
+
+rows_upsert(
+  coho_data_tbl_2020
+  ,
+  #here have prior years, so append id cols, reversing pattern for escp
+  left_join(
+    readxl::read_excel("O:/code/coho/forecast_wb/Smolt Time Series.xlsx", sheet = "stipm_2022") |> 
+      select(year, StockID, smolt) |> 
+      filter(year > 2017)
+    ,
+    coho_data_tbl |> 
+      distinct(pop_id, pop, StockID, StockLongName, lon, lat, hab_km, smolt_ocn_surv_pop, hat)
+    ,
+    by = c("StockID"))
+  ,
+  by = c("StockID", "year")) |> filter(year >= 2020) |> print(n=50)
+
+```
+
+Harvest for AR1
+
+```{r}
+coho_data_tbl |> filter(StockID==161, year>1997) |> ggplot(aes(year, hvst)) + geom_col()
+filter(coho_data_tbl, StockID==161, year>1997) |> ggplot(aes(year, hvst/spwn)) + geom_col()
+filter(coho_data_tbl, StockID==161, year>1997) |> ggplot(aes(year, hvst/(hvst+spwn))) + geom_col()
+
+coho_data_tbl |> filter(StockID==161, year>1997) |> ggplot(aes(spwn, hvst, color = year)) + geom_point() + scale_x_continuous(limits = c(0,100000)) + scale_y_continuous(limits = c(0,100000))
+
+coho_data_tbl |> filter(StockID==161, year>1997) |> ggplot(aes(log(spwn), log(hvst), color = year, label = year)) + geom_point() + geom_text() + geom_smooth(method = "lm")# + facet_wrap(~year>2015)
+
+summary(lm(hvst ~ spwn, data = filter(coho_data_tbl, StockID==161, year>1997)))
+summary(lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, year>1997)))
+summary(lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, year>2015)))
+
+
+
+select(year, spwn, hvst, rtrn)
+
+```
+
+
+
 \
 
 # Model fitting
 
-Models are first fit to progressive subsets of the data filtered by year in order to gauge *as applied* forecast skill. Rather than a "sliding window" (e.g., the prior 10 years stepped forward each year), the dataset is "stretched" from a fixed starting year. Although older observations may have less immediate relevance to current conditions, this approach allows the MCMC sampler to explore a larger parameter space for posterior distributions. Future work could compare skill with a sliding alternative to test the hypothesis that a more constrained but more recent span of years could improve prediction.
+Models are first fit to progressive subsets of the data filtered by year in order to gauge *as applied* forecast skill. Rather than a "sliding window" (e.g., the prior 10 years stepped forward each year), the dataset is "stretched" from a fixed starting year.
 
-In practice, the data available to forecast a given year return may be limited to observations from one, two or even three years prior. These lags can vary by data type and source.
-
-For example, a 2022 preseason forecast, made in January of 2022, would likely have available:
+The data available for the 2022 preseason forecast are:
 
  - Smolt outmigrant abundances from 2020 or 2021
  - CWT recoveries & releases (informing marine survival) from 2019 or 2020; from 2017 brood, released in 2019 with recoveries in 2020
@@ -438,7 +523,7 @@ Next, wrappers to the `rstan::stan` function facilitate repeated fitting with co
 stan_ar1 <- function(stan_data, n_iter = 200, n_chain = 2){
   #note following orig naming convention where "tot" refers to "total return" = spwn + hvst = rtrn, as estimated from FRAM
   stan_fit <- stan(
-    file = 'LD_coho_forecast_AR_ind_2_v4.stan', #OAT fits for review run with _v2
+    file = 'LD_coho_forecast_AR_ind_2_v4.stan',
     iter = n_iter, chains = n_chain, thin = 1, seed = 222,
     control = list(adapt_delta = 0.999, max_treedepth = 12),
     data = list(
@@ -531,7 +616,7 @@ stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
 
 ## One-ahead *post-hoc* forecast
 
-The one-at-a-time model fitting proceeds by iterating through a vector of "max data years", predicting the following year by first filtering down a subset of the estimation data, then calling the stan models, and then extracting diagnostic and posterior results. (Note this chunk was executed on a remote server due to the processing time demands.)
+The one-at-a-time model fitting proceeds by iterating through a vector of "max data years", predicting the following year by first filtering down a subset of the estimation data, then calling the stan models, and then extracting diagnostic and posterior results.
 
 ```{r oat, eval=FALSE}
 #intermediary single year output is saved out within map() in case of loop disruptions
