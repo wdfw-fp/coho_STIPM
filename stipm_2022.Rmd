@@ -416,7 +416,7 @@ Jan 20 2022 email from Dr. Litz: "O:/code/coho/forecast_wb/Smolt Time Series Dat
 #added Chehalis (backcalc'd) and Queets+Clearwater from email text
 #no 2020 for Sno, Deschutes, Chehalis
 
-rows_upsert(
+coho_data_tbl_2020 <- rows_upsert(
   coho_data_tbl_2020
   ,
   #here have prior years, so append id cols, reversing pattern for escp
@@ -430,11 +430,13 @@ rows_upsert(
     ,
     by = c("StockID"))
   ,
-  by = c("StockID", "year")) |> filter(year >= 2020) |> print(n=50)
+  by = c("StockID", "year")) 
+
+coho_data_tbl_2020 |> filter(year >= 2020) |> print(n=50)
 
 ```
 
-Harvest for AR1
+Construct a preliminary harvest from simple regression on escapement
 
 ```{r}
 coho_data_tbl |> filter(StockID==161, year>1997) |> ggplot(aes(year, hvst)) + geom_col()
@@ -445,13 +447,22 @@ coho_data_tbl |> filter(StockID==161, year>1997) |> ggplot(aes(spwn, hvst, color
 
 coho_data_tbl |> filter(StockID==161, year>1997) |> ggplot(aes(log(spwn), log(hvst), color = year, label = year)) + geom_point() + geom_text() + geom_smooth(method = "lm")# + facet_wrap(~year>2015)
 
-summary(lm(hvst ~ spwn, data = filter(coho_data_tbl, StockID==161, year>1997)))
 summary(lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, year>1997)))
-summary(lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, year>2015)))
+#tightening to recent years in lower return regime (also boosts r2) 
+summary(lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, year>=2016)))
+predict(
+  lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, year>=2016)),
+  filter(coho_data_tbl_2020, StockID==161, year==2020)
+  ) |> exp() #6270
 
 
-
-select(year, spwn, hvst, rtrn)
+coho_data_tbl_2020 <- rows_upsert(
+  coho_data_tbl_2020
+  ,
+  filter(coho_data_tbl_2020, StockID==161, year==2020) |> 
+    mutate(hvst = 6270, rtrn = spwn + hvst)
+  ,
+  by = c("StockID", "year"))
 
 ```
 
@@ -469,7 +480,7 @@ The data available for the 2022 preseason forecast are:
  - CWT recoveries & releases (informing marine survival) from 2019 or 2020; from 2017 brood, released in 2019 with recoveries in 2020
  - FRAM-based estimates of harvest and escapement (informing annual total return) from 2019 or 2020
   - 2019 values are complete from the previous preseason planning process
-  - 2020 estimates exist and are being compiled for Jan/Feb CoTC post-season runs
+  - 2020 estimates are being compiled for Jan/Feb CoTC post-season runs
   - preliminary 2021 escapement estimates may be available, but will still be in review and undergoing regional QAQC
     
 
@@ -1180,55 +1191,6 @@ oat_obs |>
   
 ```
 
-### Animation
-
-```{r oat_obs_pred_gganimate, eval=FALSE}
-library(gganimate)
-
-animate(
-  set_names(2009:2019) |> 
-    #bind_rows of blocks per-forecast year of train & pred
-    map_df(function(x) {
-      full_join(
-        coho_data_tbl |> 
-          filter(StockID == 161, between(year, 1998, x-1)) |> 
-          select(year, StockID, pop, obs = rtrn) |> 
-          mutate(lag_mod = if_else(year <= x-3, "supplied", "withheld"))
-        ,
-        oat_obs |> 
-          filter(StockID == 161, str_detect(lag_mod, "l3|pre_fcst"), year == x) |> 
-          select(year, StockID, pop, lag_mod, rtrn:`97.5%`)
-        , by = c("StockID", "pop", "year", "lag_mod")
-      ) |> 
-        mutate(year_pred = x, year_data = x-3)# , across(contains("year"), as.character))
-    }) |> 
-    ggplot(aes(x = year)) +
-    #observed in forecast year
-    geom_point(aes(y = rtrn), color = 1, shape = 17, size = 1.8)  +
-    #forecasts
-    geom_pointrange(aes(y = `50%`, ymin = `2.5%`, ymax = `97.5%`, color = lag_mod), fatten = 1.02, position = position_dodge2(width = 0.8), show.legend = T) +
-    geom_point(aes(y = `50%`, color = lag_mod), size = 1.2, position = position_dodge2(width = 0.8), show.legend = T) +
-    #pre-forecast data
-    geom_vline(aes(xintercept = year_data), linetype = "dotted", size = 1) +
-    geom_line(aes(y = obs, group = year_pred), color = grey(0.8), size = 1) +
-    geom_point(aes(y = obs), color = grey(0.4), size = 1) +
-    geom_point(aes(y = obs, color = lag_mod), size = 0.9) +
-    
-    scale_x_continuous(name = "", limits = c(1998, 2020), breaks = 1998:2020, labels = 1998:2020) +
-    #scale_x_discrete(name = "", limits = as.character(1998:2019), drop = FALSE, guide = guide_axis(n.dodge = 2)) +
-    scale_y_continuous(name = "Return", limits = c(0,350000), labels = scales::comma) + #limits drops point error when outside ymax
-    scale_color_manual(name = "", values = c(pal_lag_mod, grey(0.4), grey(0.8))) +
-    theme(legend.position = "top", axis.text = element_text(size = 6), axis.title = element_text(size = 5)) +
-    #facet_wrap(~year_pred, ncol = 1)
-    transition_states(year_pred, 1, 4) #+ shadow_mark(alpha = 0.4)
-  ,
-  width = 7, height = 5, units = "in", res = 100
-)
-
-anim_save("oat_l3_anim.gif")
-
-```
-
 
 # Full dataset
 
@@ -1236,14 +1198,15 @@ anim_save("oat_l3_anim.gif")
 #use all data
 (
   stan_data_list <- stan_data_filter(
-    coho_data_tbl, 
+    #coho_data_tbl,
+    coho_data_tbl_2020,
     data_year_min = 1998, data_year_max = 2021, 
     lag_smolt = 0, lag_MS = 0, lag_spwn = 0, lag_hvst = 0)
 )
 
-#construct estimates far forward by "tricking" the wrapper that sets n_year
-#expecting to retain fit objects and extract summary info differently than OAT
-stan_data_list$y_min_max <- 1998:2030
+# #can construct estimates beyond desired forecast year by "tricking" the wrapper that sets n_year
+# #then retain fit objects and extract prediction as adult_est (for AR1) and adult_est+harvest_est (for STIPM)
+# stan_data_list$y_min_max <- 1998:2021
 
 print(stan_data_list$y_min_max)
 print(c("smolt", range(stan_data_list$smolt$year)))
@@ -1251,6 +1214,9 @@ print(c("MS", range(stan_data_list$MS$year)))
 print(c("spwn", range(stan_data_list$spwn$year)))
 print(c("hvst", range(stan_data_list$hvst$year)))
 print(c("rtrn", range(stan_data_list$rtrn$year)))
+
+fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 400, n_chain = 2)
+fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 400, n_chain = 2)
 
 # # #on AWS
 # fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 4000, n_chain = 4)
@@ -1267,25 +1233,48 @@ print(c("rtrn", range(stan_data_list$rtrn$year)))
 # 
 # fit_ar1 <- readRDS("O:/code/coho/forecast_wb/full_data_fit_ar1.rds")
 # 
-# fit_ar1_wb <- spread_draws(fit_ar1, adult_est[n_year,n_pop] | n_pop) |> 
-#   ungroup() |> select(n_year, .iteration, rtrn = `34`) |> 
-#   mutate(year = 1997+n_year, mod = "ar1") 
+fit_ar1_wb <- spread_draws(fit_ar1, adult_est[n_year,n_pop] | n_pop) |>
+  ungroup() |> select(n_year, .iteration, rtrn = `34`) |>
+  mutate(year = first(stan_data_list$y_min_max)-1+n_year, mod = "ar1")
 # 
 # saveRDS(fit_ar1_wb, "fit_ar1_wb_adult_est.rds")
 # 
 # fit_stipm <- readRDS("O:/code/coho/forecast_wb/full_data_fit_stipm.rds")
 # #stipm requires constructing total return from harvest + spawning adults
-# fit_stipm_wb <- full_join(
-#   spread_draws(fit_stipm, adult_est[n_year,n_pop] | n_pop) |> 
-#     ungroup() |> select(n_year, .chain, .iteration, .draw, spwn = `34`)
-#   ,
-#   spread_draws(fit_stipm, harvest_est[n_year,n_pop] | n_pop) |> 
-#     ungroup() |> select(n_year, .chain, .iteration, .draw, hvst = `34`)
-#   ,
-#   by = c("n_year", ".chain", ".iteration", ".draw")) |> 
-#   mutate(year = 1997+n_year, rtrn = spwn+hvst, mod = "stipm")
+fit_stipm_wb <- full_join(
+  spread_draws(fit_stipm, adult_est[n_year,n_pop] | n_pop) |>
+    ungroup() |> select(n_year, .chain, .iteration, .draw, spwn = `34`)
+  ,
+  spread_draws(fit_stipm, harvest_est[n_year,n_pop] | n_pop) |>
+    ungroup() |> select(n_year, .chain, .iteration, .draw, hvst = `34`)
+  ,
+  by = c("n_year", ".chain", ".iteration", ".draw")) |>
+  mutate(year = first(stan_data_list$y_min_max)-1+n_year, rtrn = spwn+hvst, mod = "stipm")
 # 
 # saveRDS(fit_stipm_wb, "fit_stipm_wb_adult_est.rds")
+
+
+#no 2022 when y_min_man ends 2021
+fit_stipm_wb |> group_by(year) |> summarise(across(spwn:rtrn, ~quantile(.x, 0.5)), .groups = "drop") |> filter(year > 2018) 
+#but can get distribution of draws on 2022 from adult_pred
+#should bind_rows on fit_stipm_wb rather than force extra years in y_min_man
+spread_draws(fit_stipm, adult_pred[n_pop] | n_pop) |> ungroup() |> 
+  select(.chain, .iteration, .draw, rtrn = `34`) |> 
+  mutate(year = last(stan_data_list$y_min_max)+1, mod = "stipm") |> 
+  summarise(across(rtrn:year, ~quantile(.x, 0.5)), .groups = "drop") 
+#matches the older summary()$summary shown below
+fit_stipm_pred |> filter(StockID == 161)
+
+fit_stipm_wb <- bind_rows(
+  fit_stipm_wb,
+  spread_draws(fit_stipm, adult_pred[n_pop] | n_pop) |> ungroup() |> 
+    select(.chain, .iteration, .draw, rtrn = `34`) |> 
+    mutate(year = last(stan_data_list$y_min_max)+1, mod = "stipm")
+  )
+
+
+#get 2022 from AR1 adult_est...
+fit_ar1_wb |> group_by(year) |> summarise(across(rtrn, ~quantile(.x, 0.5)), .groups = "drop") |> filter(year > 2018) 
 
 ```
 
@@ -1293,8 +1282,6 @@ print(c("rtrn", range(stan_data_list$rtrn$year)))
 fit_ar1_wb <- readRDS( "fit_ar1_wb_adult_est.rds")
 fit_stipm_wb <- readRDS("fit_stipm_wb_adult_est.rds")
 
-#redo as row_bound object grouped by mod
-#will need to select rtrn from stipm
 est_wb_rtrn <- bind_rows(
   fit_ar1_wb |> select(mod, year, rtrn), 
   fit_stipm_wb |> select(mod, year, rtrn)
@@ -1357,121 +1344,8 @@ est_wb_rtrn |>
        fill = "Model") +
   theme_light(base_size = 13)
 
-ggsave("O:/code/coho/forecast_wb/f_example_2022.png", width = 11, height = 7)
+##ggsave("O:/code/coho/forecast_wb/f_example_2022.png", width = 11, height = 7)
 
-
-
-
-fit_ar1_wb |> 
-fit_stipm_wb |> 
-  filter(between(year, 1998, 2022)) |> 
-  ggplot(aes(year, rtrn)) +
-  stat_lineribbon(alpha = 0.7) +
-  geom_point(
-    data = coho_data_tbl |> filter(StockID == 161, between(year, 1998, 2022)),
-    color = 1
-  ) +
-#  scale_fill_manual(values = c("#D3BEAF", "#858753", "#254029")) +
-#  scale_fill_brewer(palette = "Purples") +
-  scale_fill_manual(values = c("#FFEB70", "#FFE138", "#FFD700")) + #colorRampPalette(c("gold", "#FFEB70"))(3) |> rev()
-  scale_x_continuous("", breaks = 1998:2022, guide = guide_axis(n.dodge = 2)) +
-  scale_y_continuous("Forecast return", labels = scales::comma) +
-#  labs(title = "AR1 full dataset posterior draws", fill = "Interval")
-  labs(title = "STIPM full dataset posterior draws", fill = "Interval")
-
-#base geom_density
-fit_ar1_wb |> 
-  filter(year == 2022) |>
-  ggplot(aes(est)) +
-  geom_density() +
-  coord_cartesian(xlim = c(0, 120000)) +
-#  geom_vline(aes(xintercept = mean(est)), color = 4) +
-  geom_vline(
-    data = filter(fit_ar1_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
-    aes(xintercept = est), linetype = c("dotted", "dashed", "solid", "dashed", "dotted")
-    ) +
-  geom_text(
-    data = filter(fit_ar1_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
-    aes(x = est, y = 0, label = paste(q, round(est), sep = "%: ")), nudge_x = 4000,
-    show.legend = F) +
-  scale_x_continuous("", breaks = seq(0, 2e5, by = 2e4), guide = guide_axis(n.dodge = 2)) +
-  scale_y_continuous("Posterior draw density", labels = NULL) +
-  labs(title = "AR1 2022 posterior draws", fill = "Interval")
-
-
-#seems to need more than one yaxis factor level and boost the default "n" to get smoother lines
-fit_ar1_wb |> 
-  filter(between(year, 2010,2022)) |> 
-  ggplot(aes(x = est, y = fct_rev(factor(year)))) +
-  stat_density_ridges(
-    geom = "density_ridges_gradient", from = 0, n = 2048,
-    aes(fill = abs(0.5 - stat(ecdf))), calc_ecdf = TRUE,
-    quantile_lines = TRUE, 
-    quantiles = c(0.025, 0.25, 0.5, 0.75, 0.975),
-    show.legend = F
-    ) +
-  wacolors::scale_fill_wa_c(palette = "gorge") +
-  coord_cartesian(xlim = c(0, 120000)) +
-  scale_x_continuous("Posterior draws", labels = scales::comma) +
-  scale_y_discrete("") +
-  geom_text(
-    data = filter(fit_ar1_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
-    aes(x = est, y = 0.6, label = paste(str_sub(q, 5, 10), round(est), sep = ":")), show.legend = F)
-
-# fit_ar1_wb |> 
-#   filter(between(year, 2010,2022)) |> 
-#   ggplot(aes(x = log(est, 10), y = fct_rev(factor(year)))) +
-#   stat_density_ridges(
-#     geom = "density_ridges_gradient", 
-#     aes(fill = abs(0.5 - stat(ecdf))), calc_ecdf = TRUE,
-#     quantile_lines = TRUE, 
-#     quantiles = c(0.025, 0.25, 0.5, 0.75, 0.975),
-#     show.legend = F
-#     ) +
-#   wacolors::scale_fill_wa_c(palette = "gorge") +
-#   scale_x_continuous("Log10 posterior draws") +
-#   scale_y_discrete("")
-
-
-fit_ar1_wb |> 
-fit_stipm_wb |> 
-  filter(year == 2022) |> 
-  ggplot(aes(est)) +
-  #stat_slab()
-  stat_halfeye(
-    aes(
-      fill_ramp = stat(cut_cdf_qi(
-        cdf,.width = c(.5, .8, .95),
-        labels = scales::percent_format()))
-      ),
-    fill = "#31543B"
-    #, show.legend = F
-    ) +
-#  coord_cartesian(xlim = c(0, 120000)) +
-  coord_cartesian(xlim = c(0, 90000)) +
-  geom_vline(
-#    data = filter(fit_ar1_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
-    data = filter(fit_stipm_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
-    aes(xintercept = est), linetype = c("dotted", "dashed", "solid", "dashed", "dotted")
-  ) +
-  geom_text(
-#    data = filter(fit_ar1_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
-    data = filter(fit_stipm_wb_q, year == 2022) |> pivot_longer(-year, names_to = "q", values_to = "est"),
-    aes(x = est, y = -0.03, label = paste(q, round(est), sep = "%: ")), nudge_x = 4000,
-    show.legend = F) +
-  scale_x_continuous("Forecast return", breaks = seq(0, 2e5, by = 2e4), guide = guide_axis(n.dodge = 2)) +
-  scale_y_continuous("Posterior draw density", labels = NULL) +
-  
-  ggdist::scale_fill_ramp_discrete(range = c(1, 0.2), from = "#D3BEAF", na.translate = FALSE) +
-#  labs(title = "AR1 2022 posterior draws", fill = "", fill_ramp = "Interval")
-  labs(title = "STIPM 2022 posterior draws", fill = "", fill_ramp = "Interval")
-
-bind_rows(
-fit_ar1_wb |> filter(year == 2022) |> mutate(mod = "ar1"),
-fit_stipm_wb |> filter(year == 2022) 
-)
-  ggplot(aes(est)) +
-  #stat_slab()
 
 ```
 
@@ -1536,243 +1410,6 @@ fit_ar1_adult_est |> filter(pop_id == 34) |> tail(1)
 fit_ar1_pred |> filter(pop_id == 34)
 fit_stipm_adult_est |> filter(pop_id == 34) |> tail(1)
 fit_stipm_pred |> filter(pop_id == 34)
-
-
-fit_ar1_adult_est |> 
-  filter(pop_id == 34) |> 
-  ggplot(aes(x = year, fill = mod, color = mod)) +
-  scale_y_continuous("Estimated adult return", labels = scales::comma) +
-  scale_fill_manual(values = pal_lag_mod[1], aesthetics = c("fill", "color") ) +
-  geom_ribbon(aes(ymin = `2.5%`, ymax = `97.5%`), alpha = 0.2) + 
-  geom_line(aes(y = `50%`)) +
-  geom_point(aes(y = rtrn), color = 1) 
-
-bind_rows(fit_ar1_adult_est, fit_stipm_adult_est) |> 
-  filter(pop_id == 34) |> 
-  ggplot(aes(x = year, fill = mod, color = mod)) +
-  scale_y_continuous("Estimated adult return", labels = scales::comma) +
-  scale_fill_manual(values = pal_lag_mod, aesthetics = c("fill", "color") ) +
-  geom_ribbon(aes(ymin = `2.5%`, ymax = `97.5%`), alpha = 0.2) + 
-  geom_line(aes(y = `50%`), size = 1.2) +
-  geom_point(aes(y = rtrn), color = 1) 
-
-```
-
-# REVISE/DELETE
-
-```{r wb_plots}
-#error: pred - obs, 
-oat_obs |> filter(StockID == 161) |> 
-  ggplot(aes(year, err)) + geom_col() + facet_wrap(~lag_mod, ncol = 2)
-
-#percent error
-oat_obs |> filter(StockID == 161) |> 
-  ggplot(aes(year, err_pct)) + geom_col() + facet_wrap(~lag_mod, ncol = 2)
-
-pre_oat <- coho_data_tbl |> filter(between(year, 1998, 2008)) |> select(year, StockID, pop, rtrn)
-coho_data_tbl |> filter(StockID == 161, between(year, 2009, 2010)) |> summarise(rtrn = mean(rtrn)) #108082
-coho_data_tbl |> filter(StockID == 161, between(year, 2018, 2019)) |> summarise(rtrn = mean(rtrn)) #18212
-#pred lines on obs cols
-oat_obs |> filter(StockID == 161) |> 
-  ggplot(aes(year)) + 
-  geom_col(data = filter(pre_oat, StockID == 161), aes(y = rtrn), fill = grey(0.8)) +
-  geom_col(aes(y = rtrn)) +
-  geom_line(aes(y = `50%`), color = 4, size = 1.2) + 
-  annotate("text", x = 2011, y = 110000, label = "avg 108K\n2009-10", hjust = 0) +
-  annotate("text", x = 2017, y = 70000, label = "avg 18K\n2018-19", hjust = 0) +
-  facet_wrap(~lag_mod, ncol = 2)
-
-#same thing, lags as color
-#pred lines on obs cols
-oat_obs |> filter(StockID == 161) |> 
-  separate(lag_mod, c("lag", "mod")) |> 
-  ggplot(aes(year)) + 
-  geom_col(data = coho_data_tbl |> filter(StockID == 161, between(year, 1998, 2008)) |> select(year, StockID, pop, rtrn), aes(y = rtrn), fill = grey(0.8)) +
-  geom_col(data = coho_data_tbl |> filter(StockID == 161, between(year, 2009, 2019)) |> select(year, StockID, pop, rtrn), aes(y = rtrn)) +
-  geom_line(aes(y = `50%`, color = lag), size = 1.2) + 
-  annotate("text", x = 2011, y = 110000, label = "avg 108K\n2009-10", hjust = 0) +
-  annotate("text", x = 2017, y = 70000, label = "avg 18K\n2018-19", hjust = 0) +
-  facet_wrap(~mod, ncol = 1)
-
-
-#scatter showing 50+IQR
-oat_obs |> filter(StockID == 161) |> 
-  ggplot(aes(rtrn, `50%`, label = year)) + 
-  geom_abline(slope = 1, intercept = 0) +
-  geom_point() + 
-  geom_pointrange(aes(ymin = `25%`, ymax = `75%`)) +
-  geom_text(hjust = -0.2) + 
-  scale_x_continuous(limits = c(0, 150000), labels = scales::comma) +
-  scale_y_continuous("One-ahead forecast", limits = c(0, 150000), labels = scales::comma) +
-  facet_wrap(~lag_mod, ncol = 2)
-
-#scatter illustrating relative over/underprediction at different posterior percentiles
-oat_obs |> filter(StockID == 161) |> 
-  select(lag_mod, year, StockID, pop, rtrn:`75%`) |> 
-  #filter(str_detect(lag_mod, "l1_stipm|l2_stipm")) |> 
-  filter(str_detect(lag_mod, "tipm")) |> 
-  pivot_longer(cols = `2.5%`:`75%`, names_to = "pctnl", values_to = "pred") |> 
-  ggplot(aes(rtrn, pred, label = year)) + 
-  geom_abline(slope = 1, intercept = 0) +
-  geom_point() + geom_text() + 
-  scale_x_continuous(limits = c(0, 150000), labels = scales::comma) +
-  scale_y_continuous(limits = c(0, 150000), labels = scales::comma) +
-  facet_wrap(~lag_mod+pctnl, ncol = 4)
-
-#focus on highly conservative scatter on worst case data lag
-oat_obs |> filter(StockID == 161) |> 
-  filter(str_detect(lag_mod, "l2_stipm")) |> 
-  ggplot(aes(rtrn, `2.5%`, label = year)) + 
-  geom_abline(slope = 1, intercept = 0) +
-  geom_point() + geom_text() + 
-  scale_x_continuous(limits = c(0, 120000), labels = scales::comma) +
-  scale_y_continuous(limits = c(0, 75000), labels = scales::comma) +
-  facet_wrap(~lag_mod, ncol = 2)
-
-```
-
-```{r oat_obs_mase_by_lag, eval=FALSE}
-#MASE ratios by lag
-oat_obs |> 
-  select(pop_id, pop, lag_mod, year, mase) |>
-  pivot_wider(names_from = lag_mod, values_from = mase) |> 
-  mutate(
-    l1_l2_ar1 = l1_ar1 / l2_ar1,
-    l1_l2_stipm = l1_stipm / l2_stipm,
-    l1_stipm_ar1 = l1_stipm / l1_ar1
-  ) |> 
-  # group_by(pop_id, pop) |> 
-  # summarise(across(starts_with("l1_l2"), list(min = ~min(.), med = ~median(.), max = ~max(.)))) |> print(n = 50)
-  filter(pop_id == 34) |>
-  select(pop, year, l1_ar1, l2_ar1, l1_l2_ar1, l1_stipm, l2_stipm, l1_l2_stipm, l1_stipm_ar1) |> 
-  gt() |> 
-  fmt_number(l1_ar1:l1_stipm_ar1, decimals = 2) |> 
-  tab_spanner("AR1", l1_ar1:l1_l2_ar1) |> 
-  tab_spanner("STIPM", contains("stipm"))
-
-
-```
-
-```{r oat_obs_l1_vs_l2_stipm, eval=FALSE}
-# #WB focus
-# coho_data_tbl |> filter(pop_id == 34) |> select(pop_id:StockID, year, spwn, hvst, rtrn) |> print(n = 50)
-# oat_obs |> filter(pop_id == 34) |> filter(str_detect(lag_mod, "stipm"))
-
-#compare lags for STIPM
-oat_obs |> 
-  select(pop_id, lag_mod, year, rtrn:`90%`, err:mase, in_10_90) |>
-  filter(str_detect(lag_mod, "stipm")) |> arrange(lag_mod, year) |> 
-  filter(pop_id == 34) |>
-  #gt(groupname_col = "year", rowname_col = "lag_mod")
-  gt(groupname_col = "lag_mod", rowname_col = "year") |> 
-  cols_hide(pop_id) |> 
-  fmt_number(rtrn:err_abs, decimals = 0) |> 
-  fmt_number(err_log:mase, decimals = 2) |> 
-  summary_rows(groups = TRUE, fns = list(min = ~min(.), med = ~median(.), max = ~max(.)))
-```
-
-```{r oat_obs_ar1_vs_stipm_l1, eval=FALSE}
-#compare STIPM vs AR1 lag1    
-oat_obs |> 
-  select(pop_id, lag_mod, year, rtrn:`90%`, err:mase, in_10_90) |>
-  filter(str_detect(lag_mod, "l1")) |> arrange(lag_mod, year) |> 
-  filter(pop_id == 34) |>
-  #gt(groupname_col = "year", rowname_col = "lag_mod")
-  gt(groupname_col = "lag_mod", rowname_col = "year") |> 
-  cols_hide(pop_id) |> 
-  fmt_number(rtrn:err_abs, decimals = 0) |> 
-  fmt_number(err_log:mase, decimals = 2) |> 
-  summary_rows(groups = TRUE, fns = list(min = ~min(.), med = ~median(.), max = ~max(.)))
-```
-
-```{r odds_and_ends, eval=FALSE}
-# rr <- bind_cols(
-#   readxl::read_excel("O:/code/coho/forecast_wb/2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", range = "RR!C38:C48", col_names = "year"),
-#   readxl::read_excel("O:/code/coho/forecast_wb/2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", range = "RR!E38:E48", col_names = "escp"),
-#   readxl::read_excel("O:/code/coho/forecast_wb/2021 WB4 Coho Forecast Model DRAFT 12.14.2020.xlsx", range = "RR!U38:U48", col_names = "catch")) |> 
-#   mutate(trs = escp + catch)
-
-
-#all years, all pops
-oat_obs |> 
-  group_by(lag_mod) |> 
-  summarise(
-    n = n(),
-    in_10_90_sum = sum(in_10_90),
-    in_10_90_pct = in_10_90_sum / n,
-    across(err:mase, median),
-    .groups = "drop")
-
-#all years by pop
-oat_obs |> 
-  group_by(lag_mod, pop_id, pop) |> 
-  summarise(
-    n = n(),
-    in_10_90_sum = sum(in_10_90),
-    in_10_90_pct = in_10_90_sum / n,
-    across(err:mase, median),
-    .groups = "drop") |> 
-  filter(pop_id == 34)
-
-# #values are terminal run sizes from regional workbook
-# #catches do not include preterm, so escapements line up but t9$obs != stipm$rtrn 
-# t9 <- readxl::read_excel("O:/code/coho/forecast_wb/table9_2020_submission.xlsx") |> 
-#   mutate(
-#     err = obs - mar_surv,
-#     err_abs = abs(err),
-#     err_log = log(obs) - log(mar_surv),
-#     err_abs_pct = err_abs / obs
-#   )
-# 
-# t9 |> filter(between(year, 2013, 2018)) |> summarise(across(err:err_abs_pct, median))
-# oat_obs |> arrange(mod, year) |> 
-#   filter(pop_id == 34) |> select(mod, year, rtrn, `10%`:`90%`, err:err_abs_pct) |> group_by(mod) |> summarise(across(err:err_abs_pct, median))
-
-```
-
-
-```{r test_2050s, eval=FALSE}
-#further into future just with larger n_year? oh yes.
-
-fit_ar1_test <- stan(
-  file = 'LD_coho_forecast_AR_ind_2.stan',
-  iter = 200, chains = 2, thin = 1, seed = 222,
-  control = list(adapt_delta = 0.99, max_treedepth = 10.25),
-  data = list(
-    #Number of years (total, includes several missing years for some stocks)
-    n_year = length(unique(tbl_coho$year))*2,
-    #Number of total populations    
-    n_pop = length(unique(tbl_coho$pop_id)),
-    #Number of populations with return data
-    n_pop_tot = length(unique(tbl_coho_stan$rtrn$pop_id)),
-    #Which populations possess return data
-    pop_tot = unique(tbl_coho_stan$rtrn$pop_id),
-    #Length of the return data vectors
-    n_tot = nrow(tbl_coho_stan$rtrn), #length(tot_dat)
-    #Vectors of all return data across all populations
-    tot_dat = tbl_coho_stan$rtrn$rtrn,
-    #Vectors of the indices identifying which years are those with non-NA data for the return data
-    tot_true = tbl_coho_stan$rtrn$yr,
-    #Paired vectors of slice points indicating the beginning, and end of the data for a particular population
-    slice_tot_start = tbl_coho_stan$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-    slice_tot_end = tbl_coho_stan$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
-    )
-  )
-
-fit_ar1_test_smry <- fit_smry(fit_ar1_test)
-
-fit_ar1_test_smry$adult_est |> #tail() 
-  filter(pop_id > 30) |> 
-  ggplot(aes(x = year)) +
-  scale_y_continuous("Estimated adult return", labels = scales::comma) +
-  scale_fill_brewer(type = "qual", aesthetics = c("fill", "color") ) +
-  geom_ribbon(aes(ymin = `10%`, ymax = `90%`), alpha = 0.2) + 
-  geom_line(aes(y = `50%`)) +
-  geom_point(
-    data = tbl_coho_stan$rtrn |> filter(pop_id > 30) |> select(year, pop, pop_id, rtrn),
-    aes(y = rtrn),
-    inherit.aes = T) +
-  facet_wrap(~pop)
 
 ```
 
