@@ -369,12 +369,9 @@ write_csv(coho_data_tbl, "data/fram_cwt_smolt_fulljoin.csv")
 
 ## TEMP adding 2022 updates
 
-Pre-CoTC 2020 escapement estimates that feed postseason BackwardsFRAM table. Not identical to forward FRAM resulting Escapement table values used in other years, but 1) should be close and 2) are what is available.
-
-```{r}
-# #unused
-# "T:/DFW-Salmon Mgmt Modeling Team - General/Escapement files/Coho/fram_coho_escapement_2022.xlsx" |> 
-#   readxl::read_excel(range = "BK2020!A6:D160")
+```{r add_prelim_spwn}
+#Pre-CoTC 2020 escapement estimates that feed postseason BackwardsFRAM table. 
+#Not identical to forward FRAM resulting Escapement table values used in other years, but 1) should be close and 2) are what is available.
 
 coho_data_tbl_2020 <- rows_upsert(
   coho_data_tbl
@@ -396,14 +393,13 @@ coho_data_tbl_2020 <- rows_upsert(
   by = c("StockID", "year")
 )
 
-coho_data_tbl |> filter(year >= 2020) |> print(n=50)
-coho_data_tbl_2020 |> filter(year >= 2020) |> print(n=50)
+# coho_data_tbl |> filter(year >= 2020) |> print(n=50)
+# coho_data_tbl_2020 |> filter(year >= 2020) |> print(n=50)
 
 ```
 
-Jan 20 2022 email from Dr. Litz: "O:/code/coho/forecast_wb/Smolt Time Series Data.csv"
-
-```{r}
+```{r add_new_smolt}
+##Jan 20 2022 email from Dr. Litz: "O:/code/coho/forecast_wb/Smolt Time Series Data.csv"
 ## initiated new sheet 
 # coho_data_tbl |>
 #   filter(!is.na(smolt)) |>
@@ -432,7 +428,7 @@ coho_data_tbl_2020 <- rows_upsert(
   ,
   by = c("StockID", "year")) 
 
-coho_data_tbl_2020 |> filter(year >= 2020) |> print(n=50)
+# coho_data_tbl_2020 |> filter(year >= 2020) |> print(n=50)
 
 ```
 
@@ -451,21 +447,53 @@ summary(lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, yea
 #tightening to recent years in lower return regime (also boosts r2) 
 summary(lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, year>=2016)))
 predict(
-  lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, year>=2016)),
+  lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, between(year, 2016, 2019))),
   filter(coho_data_tbl_2020, StockID==161, year==2020)
   ) |> exp() #6270
+```
 
 
+```{r}
+# #add just WB
 coho_data_tbl_2020 <- rows_upsert(
   coho_data_tbl_2020
   ,
-  filter(coho_data_tbl_2020, StockID==161, year==2020) |> 
+  filter(coho_data_tbl_2020, StockID==161, year==2020) |>
     mutate(hvst = 6270, rtrn = spwn + hvst)
   ,
   by = c("StockID", "year"))
 
-```
+## OR add stocks with decent correlations and r2 in recent years
+coho_data_tbl_2020 <- rows_upsert(
+  coho_data_tbl_2020
+  ,
+  coho_data_tbl |> 
+    filter(between(year, 2016, 2019)) |> 
+    group_by(StockID, StockLongName) |> nest() |> #very similar to nest_by
+    summarise(
+      corr = map_dbl(data, ~cor(log(.x$hvst), log(.x$spwn))),
+      fit = map(data, ~lm(log(hvst) ~ log(spwn), data = .x)),
+      .groups = "keep"
+    ) |> 
+    left_join(
+      filter(coho_data_tbl_2020, year == 2020) |> select(StockID, StockLongName, spwn)
+      , by = c("StockID", "StockLongName")
+    ) |> 
+    nest(newdata = spwn) |> 
+    mutate(
+      r2 = map_dbl(fit, ~summary(.x) |> pluck("r.squared")),
+      hvst = map2_dbl(fit, newdata, ~predict.lm(.x, newdata = .y) |> exp())
+    ) |>
+    unnest(newdata) |> ungroup() |> 
+    arrange(desc(r2, corr)) |> #print(n = 50)
+    filter(corr >= 0.8, r2 > 0.8, !is.na(hvst)) |> 
+    mutate(rtrn = spwn + hvst, year = 2020) |> 
+    select(StockID, StockLongName, year, spwn, hvst, rtrn)  
+  ,
+  by = c("StockID", "year"))
 
+    
+```
 
 
 \
@@ -1215,8 +1243,8 @@ print(c("spwn", range(stan_data_list$spwn$year)))
 print(c("hvst", range(stan_data_list$hvst$year)))
 print(c("rtrn", range(stan_data_list$rtrn$year)))
 
-fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 400, n_chain = 2)
-fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 400, n_chain = 2)
+fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 1000, n_chain = 2)
+fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 1000, n_chain = 2)
 
 # # #on AWS
 # fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 4000, n_chain = 4)
@@ -1249,32 +1277,55 @@ fit_stipm_wb <- full_join(
     ungroup() |> select(n_year, .chain, .iteration, .draw, hvst = `34`)
   ,
   by = c("n_year", ".chain", ".iteration", ".draw")) |>
-  mutate(year = first(stan_data_list$y_min_max)-1+n_year, rtrn = spwn+hvst, mod = "stipm")
+  mutate(year = first(stan_data_list$y_min_max)-1+n_year, rtrn = spwn+hvst, mod = "stipm") |> 
+  bind_rows(
+    spread_draws(fit_stipm, adult_pred[n_pop] | n_pop) |> ungroup() |> 
+      select(.chain, .iteration, .draw, rtrn = `34`) |> 
+      mutate(year = last(stan_data_list$y_min_max)+1, mod = "stipm")
+  )
 # 
 # saveRDS(fit_stipm_wb, "fit_stipm_wb_adult_est.rds")
 
 
-#no 2022 when y_min_man ends 2021
-fit_stipm_wb |> group_by(year) |> summarise(across(spwn:rtrn, ~quantile(.x, 0.5)), .groups = "drop") |> filter(year > 2018) 
-#but can get distribution of draws on 2022 from adult_pred
-#should bind_rows on fit_stipm_wb rather than force extra years in y_min_man
-spread_draws(fit_stipm, adult_pred[n_pop] | n_pop) |> ungroup() |> 
-  select(.chain, .iteration, .draw, rtrn = `34`) |> 
-  mutate(year = last(stan_data_list$y_min_max)+1, mod = "stipm") |> 
-  summarise(across(rtrn:year, ~quantile(.x, 0.5)), .groups = "drop") 
-#matches the older summary()$summary shown below
-fit_stipm_pred |> filter(StockID == 161)
+#can also run fit_stipm_pred and fit_ar1_pred lines from oat chunk
+#brings n_eff, Rhat, n_diverg
+fit_ar1_pred <- summary(fit_ar1, pars = "adult_pred")$summary |>
+  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+  mutate(
+    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+    pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
+    year = last(stan_data_list$y_min_max) + 1, #pred year, max data year x+1
+    mod = "ar1",
+    n_diverg = get_sampler_params(fit_ar1, inc_warmup = FALSE) |>
+      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+  ) |>
+  left_join(distinct(coho_data_tbl, pop_id, StockID, StockLongName), by = "pop_id")
+#recall stipm adult_pred is smolt[n_year]*surv[n_year] to give adult run size (spwn+hvst) n_year+1
+fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
+  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+  mutate(
+    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+    pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
+    year = last(stan_data_list$y_min_max) + 1, #pred year, max data year x+1
+    mod = "stipm",
+    n_diverg = get_sampler_params(fit_stipm, inc_warmup = FALSE) |>
+      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+  ) |>
+  left_join(distinct(coho_data_tbl, pop_id, StockID, StockLongName), by = "pop_id")
 
-fit_stipm_wb <- bind_rows(
-  fit_stipm_wb,
-  spread_draws(fit_stipm, adult_pred[n_pop] | n_pop) |> ungroup() |> 
-    select(.chain, .iteration, .draw, rtrn = `34`) |> 
-    mutate(year = last(stan_data_list$y_min_max)+1, mod = "stipm")
-  )
+fit_ar1_pred |> 
+  filter(between(StockID, 130, 170)) |> 
+  print(n=40)
+fit_stipm_pred |> 
+  filter(between(StockID, 130, 170)) |> 
+  print(n=40)
 
+bind_rows(fit_ar1_pred, fit_stipm_pred) |> 
+  filter(between(StockID, 130, 170)) |> 
+  select(year, mod, StockID, pop, `2.5%`,`25%`,`50%`,`75%`,`97.5%`) |> 
+  pivot_wider(names_from = mod, values_from = `2.5%`:`97.5%`) |> 
+  select(year:pop, contains("50%"))
 
-#get 2022 from AR1 adult_est...
-fit_ar1_wb |> group_by(year) |> summarise(across(rtrn, ~quantile(.x, 0.5)), .groups = "drop") |> filter(year > 2018) 
 
 ```
 
@@ -1299,35 +1350,13 @@ est_wb_rtrn_q <- est_wb_rtrn |>
     .groups = "drop")
 
 
-# fit_ar1_wb_q <- fit_ar1_wb |> 
-#   group_by(year) |> 
-#   summarise(across(est, list(
-#     `2.5` = ~quantile(.x, 0.025),
-#     `25` = ~quantile(.x, 0.25),
-#     `50` = ~quantile(.x, 0.5),
-#     `75` = ~quantile(.x, 0.75),
-#     `97.5` = ~quantile(.x, 0.975)
-#     ), .names = "{.fn}"),
-#     .groups = "drop")
-# 
-# fit_stipm_wb_q <- fit_stipm_wb |> 
-#   group_by(year) |> 
-#   summarise(across(est, list(
-#     `2.5` = ~quantile(.x, 0.025),
-#     `25` = ~quantile(.x, 0.25),
-#     `50` = ~quantile(.x, 0.5),
-#     `75` = ~quantile(.x, 0.75),
-#     `97.5` = ~quantile(.x, 0.975)
-#     ), .names = "{.fn}"),
-#     .groups = "drop")
-
-
 est_wb_rtrn |> 
   filter(between(year, 1998, 2022)) |> 
   ggplot(aes(year, rtrn)) +
   stat_lineribbon(aes(fill = mod), alpha = 0.4, show.legend = F) +
   geom_point(
-    data = coho_data_tbl |> filter(StockID == 161, between(year, 1998, 2022)),
+    #data = coho_data_tbl |> filter(StockID == 161, between(year, 1998, 2022)),
+    data = stan_data_list$rtrn |> filter(StockID==161),
     color = 1
   ) +
   facet_wrap(~mod) +
@@ -1339,8 +1368,8 @@ est_wb_rtrn |>
   scale_fill_discrete(type = pal_lag_mod[1:2]) +
   scale_x_continuous("", breaks = 1998:2022, minor_breaks = 1998:2022, guide = guide_axis(n.dodge = 2)) +
   scale_y_continuous("Forecast return", labels = scales::comma) +
-  labs(title = "Willapa Bay example 2022 forecast", 
-       subtitle = "Posterior intervals of fits to 1998-2019 data",
+  labs(title = "Willapa Bay preliminary 2022 forecast", 
+       subtitle = "Posterior intervals of fits to 1998-2020 data",
        fill = "Model") +
   theme_light(base_size = 13)
 
@@ -1349,67 +1378,68 @@ est_wb_rtrn |>
 
 ```
 
-
-```{r full_data_fit_summaries, eval=FALSE}
-## recall AR1 input configured as n_year+1 relative to STIPM
-## AR1 adult_est is year-indexed through n_year+1, with final vals == adult_pred
-## STIPM adult_est year indexed through n_year, with final vals != adult_pred
-## STIPM adult_pred calc'd from smolt[n_year]*surv[n_year]
-## could bring back a version of fit_smry() removed in Aug12 commit 6b0cb287df167c6b66f0647cb020221754019be7
-
-fit_ar1_adult_est <- summary(fit_ar1, pars = "adult_est")$summary |>
-  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
-  mutate(
-    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-    pop_id = str_remove(stan_out, var) |> str_split(",") |> map_dbl( ~str_extract(.x[2], "[0-9]+") |> as.numeric()),
-    year = (stan_data_list$y_min_max[1] - 1) + as.numeric(str_extract(stan_out, "[0-9]{1,2}")),
-    mod = "ar1",
-    n_diverg = get_sampler_params(fit_ar1, inc_warmup = FALSE) |>
-      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+```{r}
+pdrw <- bind_rows(
+  #stipm
+  #pre-fcst year estimate series
+  full_join(
+    spread_draws(fit_stipm, adult_est[n_year,n_pop] | n_pop) |> ungroup() |> 
+      pivot_longer(cols = -c(n_year, .chain, .iteration, .draw), names_to = "pop_id", values_to = "spwn"),
+    spread_draws(fit_stipm, harvest_est[n_year,n_pop] | n_pop) |> ungroup() |> 
+      pivot_longer(cols = -c(n_year, .chain, .iteration, .draw), names_to = "pop_id", values_to = "hvst"),
+    by = c("n_year", ".chain", ".iteration", ".draw", "pop_id")
   ) |>
-  left_join(coho_data_tbl |> select(year, pop_id, pop, StockID, rtrn), by = c("year","pop_id"))
+    mutate(
+      year = first(stan_data_list$y_min_max)-1+n_year, n_year = NULL,
+      rtrn = spwn+hvst,
+      mod = "stipm") |> 
+    #add fcst year
+    bind_rows(
+      spread_draws(fit_stipm, adult_pred[n_pop] | n_pop) |> ungroup() |> 
+        pivot_longer(cols = -c(.chain, .iteration, .draw), names_to = "pop_id", values_to = "rtrn") |> 
+        mutate(year = last(stan_data_list$y_min_max)+1, mod = "stipm")
+    )
+  ,
+  #ar1
+  spread_draws(fit_ar1, adult_est[n_year,n_pop] | n_pop) |> ungroup() |>
+    pivot_longer(cols = -c(n_year, .chain, .iteration, .draw), names_to = "pop_id", values_to = "rtrn") |> 
+    mutate(
+      year = first(stan_data_list$y_min_max)-1+n_year, n_year = NULL,
+      mod = "ar1")  
+  ) |> 
+  mutate(pop_id = as.numeric(pop_id)) |> 
+  left_join(distinct(coho_data_tbl, pop_id, StockID, StockLongName), by = "pop_id")
 
-## needs rewrite to add harvest_est
-# fit_stipm_adult_est <- summary(fit_stipm, pars = "adult_est")$summary |>
-#   as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
-#   mutate(
-#     var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-#     pop_id = str_remove(stan_out, var) |> str_split(",") |> map_dbl( ~str_extract(.x[2], "[0-9]+") |> as.numeric()),
-#     year = (stan_data_list$y_min_max[1] - 1) + as.numeric(str_extract(stan_out, "[0-9]{1,2}")),
-#     mod = "stipm",
-#     n_diverg = get_sampler_params(fit_stipm, inc_warmup = FALSE) |>
-#       map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
-#   ) |>
-#   left_join(coho_data_tbl |> select(year, pop_id, pop, StockID, rtrn), by = c("year","pop_id"))
+```
 
-fit_ar1_pred <- summary(fit_ar1, pars = "adult_pred")$summary |>
-  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
-  mutate(
-    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-    pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-    year = last(stan_data_list$y_min_max) + 1, 
-    mod = "ar1",
-    n_diverg = get_sampler_params(fit_ar1, inc_warmup = FALSE) |>
-      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
-  ) |>
-  left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
- 
-fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
-  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
-  mutate(
-    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
-    pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-    year = last(stan_data_list$y_min_max) + 1,
-    mod = "stipm",
-    n_diverg = get_sampler_params(fit_stipm, inc_warmup = FALSE) |>
-      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
-  ) |>
-  left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
+```{r}
+ggfcst_ts <- function(stk = 161) {
+  pdrw_stk <- filter(pdrw, StockID == stk, between(year, 1998, 2022))
+  
+  #could add logic for function arg ar1only = T 
+  pdrw_stk <- filter(pdrw_stk, mod == "ar1") 
+  
+  ggplot(pdrw_stk, aes(year, rtrn)) +
+    stat_lineribbon(aes(fill = mod), alpha = 0.4, show.legend = F) +
+    geom_point(data = filter(stan_data_list$rtrn, StockID==stk), color = 1) +
+    facet_wrap(~mod) +
+    scale_fill_discrete(type = pal_lag_mod[1:2]) +
+    scale_x_continuous("", breaks = 1998:2022,  guide = guide_axis(n.dodge = 2)) +
+    scale_y_continuous("Forecast return", labels = scales::comma) +
+    labs(title = paste(pdrw_stk$StockLongName[1], "Preliminary 2022 forecast"), 
+         subtitle = "Posterior intervals of fits to 1998-2020 data",
+         fill = "Model") +
+    theme_light(base_size = 13)
+}
 
-fit_ar1_adult_est |> filter(pop_id == 34) |> tail(1)
-fit_ar1_pred |> filter(pop_id == 34)
-fit_stipm_adult_est |> filter(pop_id == 34) |> tail(1)
-fit_stipm_pred |> filter(pop_id == 34)
+ggfcst_ts()
+```
 
+```{r}
+ggfcst_ts_coast <- map(
+  coho_data_tbl |> distinct(StockID, StockLongName) |> filter(StockID > 120) |> pluck("StockID") |> set_names(), 
+ ~ggfcst_ts(.x))
+
+patchwork::wrap_plots(ggfcst_ts_coast)
 ```
 
