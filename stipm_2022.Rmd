@@ -536,7 +536,8 @@ stan_data_filter <- function(
   ){
   
   full_ymin_ymax = filter(full, between(year, data_year_min, data_year_max)) |> 
-    mutate(yr = year - min(year) + 1) #reindexing for stan
+    arrange(pop_id, year) |>  #ensure everything sorted to prevent slice point mishaps
+    mutate(yr = year - min(year) + 1)  #reindexing for stan
   
   stan_data = list(
     y_min_max = data_year_min:data_year_max,
@@ -574,8 +575,8 @@ stan_ar1 <- function(stan_data, n_iter = 200, n_chain = 2){
       tot_dat = stan_data$rtrn$rtrn,  #Vectors of all return data across all populations
       tot_true = stan_data$rtrn$yr, #Vectors of the indices identifying which years are those with non-NA data for the return data
       #Paired vectors of slice points indicating the beginning, and end of the data for a particular population
-      slice_tot_start = stan_data$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-      slice_tot_end = stan_data$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
+      slice_tot_start = pmatch(unique(stan_data$rtrn$pop_id), stan_data$rtrn$pop_id), #stan_data$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_tot_end = c(tail(pmatch(unique(stan_data$rtrn$pop_id), stan_data$rtrn$pop_id)-1, -1), length(stan_data$rtrn$pop_id)) #stan_data$rtrn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
     )
   )
   
@@ -634,19 +635,19 @@ stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
         filter(!is.na(hat_id)) |> pluck("hat_id"),
       wild = distinct(stan_data$MS, pop_id, pop, hat) |> 
         mutate(hat_id = if_else(hat < 1, row_number(), NA_integer_)) |> 
-        filter(!is.na(hat_id)) |> pluck("hat_id"), 
+        filter(!is.na(hat_id)) |> pluck("hat_id"),
+
+      slice_smolt_start = pmatch(unique(stan_data$smolt$pop_id), stan_data$smolt$pop_id), #stan_data$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_smolt_end = c(tail(pmatch(unique(stan_data$smolt$pop_id), stan_data$smolt$pop_id)-1, -1), length(stan_data$smolt$pop_id)), #stan_data$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
       
-      slice_smolt_start = stan_data$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-      slice_smolt_end = stan_data$smolt |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_esc_start = pmatch(unique(stan_data$spwn$pop_id), stan_data$spwn$pop_id), #stan_data$spwn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_esc_end = c(tail(pmatch(unique(stan_data$spwn$pop_id), stan_data$spwn$pop_id)-1, -1), length(stan_data$spwn$pop_id)), #stan_data$spwn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
       
-      slice_esc_start = stan_data$spwn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-      slice_esc_end = stan_data$spwn |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_harvest_start = pmatch(unique(stan_data$hvst$pop_id), stan_data$hvst$pop_id), #stan_data$hvst |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_harvest_end = c(tail(pmatch(unique(stan_data$hvst$pop_id), stan_data$hvst$pop_id)-1, -1), length(stan_data$hvst$pop_id)), #stan_data$hvst |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
       
-      slice_harvest_start = stan_data$hvst |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-      slice_harvest_end = stan_data$hvst |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid"),
-      
-      slice_MS_start = stan_data$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
-      slice_MS_end = stan_data$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
+      slice_MS_start = pmatch(unique(stan_data$MS$pop_id), stan_data$MS$pop_id), #stan_data$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = min(rowid), .groups = "drop") |> pluck("rowid"),
+      slice_MS_end = c(tail(pmatch(unique(stan_data$MS$pop_id), stan_data$MS$pop_id)-1, -1), length(stan_data$MS$pop_id)) #stan_data$MS |> rowid_to_column() |> group_by(pop_id) |> summarise(rowid = max(rowid), .groups = "drop") |> pluck("rowid")
     )
   )
   return(stan_fit)
@@ -1243,8 +1244,8 @@ print(c("spwn", range(stan_data_list$spwn$year)))
 print(c("hvst", range(stan_data_list$hvst$year)))
 print(c("rtrn", range(stan_data_list$rtrn$year)))
 
-fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 1000, n_chain = 2)
-fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 1000, n_chain = 2)
+fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
+fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
 
 # # #on AWS
 # fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 4000, n_chain = 4)
@@ -1322,9 +1323,9 @@ fit_stipm_pred |>
 
 bind_rows(fit_ar1_pred, fit_stipm_pred) |> 
   filter(between(StockID, 130, 170)) |> 
-  select(year, mod, StockID, pop, `2.5%`,`25%`,`50%`,`75%`,`97.5%`) |> 
+  select(year, mod, StockID, StockLongName, pop_id, `2.5%`,`25%`,`50%`,`75%`,`97.5%`) |> 
   pivot_wider(names_from = mod, values_from = `2.5%`:`97.5%`) |> 
-  select(year:pop, contains("50%"))
+  select(year:pop_id, contains("50%"))
 
 
 ```
@@ -1416,15 +1417,16 @@ pdrw <- bind_rows(
 ggfcst_ts <- function(stk = 161) {
   pdrw_stk <- filter(pdrw, StockID == stk, between(year, 1998, 2022))
   
-  #could add logic for function arg ar1only = T 
-  pdrw_stk <- filter(pdrw_stk, mod == "ar1") 
+  # #could add logic for function arg ar1only = T 
+  # pdrw_stk <- filter(pdrw_stk, mod == "ar1") 
   
   ggplot(pdrw_stk, aes(year, rtrn)) +
     stat_lineribbon(aes(fill = mod), alpha = 0.4, show.legend = F) +
     geom_point(data = filter(stan_data_list$rtrn, StockID==stk), color = 1) +
     facet_wrap(~mod) +
     scale_fill_discrete(type = pal_lag_mod[1:2]) +
-    scale_x_continuous("", breaks = 1998:2022,  guide = guide_axis(n.dodge = 2)) +
+    #scale_x_continuous("", breaks = 1998:2022,  guide = guide_axis(n.dodge = 2)) +
+    scale_x_continuous("", breaks = seq(1998, 2022, by = 2),  guide = guide_axis(angle = 45)) +
     scale_y_continuous("Forecast return", labels = scales::comma) +
     labs(title = paste(pdrw_stk$StockLongName[1], "Preliminary 2022 forecast"), 
          subtitle = "Posterior intervals of fits to 1998-2020 data",
