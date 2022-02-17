@@ -393,8 +393,6 @@ fram_2020 <- full_join(
 
 #fram |> filter(StockID == 161) |> print(n = 100)
 
-##write_csv(fram, "data/postseason_fram_spwn_hvst_ests.csv")
-
 ```
 
 ```{r add_bkfram_2020, eval=FALSE}
@@ -520,7 +518,7 @@ coho_data_tbl_2020 <- rows_upsert(
     
 ```
 
-```{r add_2021_prelim_WB_and_export}
+```{r add_2021_prelim_WB_and_export, eval=FALSE}
 # filter(coho_data_tbl_2020, StockID==161, between(year, 2016, 2020)) |> 
 #   ggplot(aes(spwn, hvst)) + geom_label(aes(label = year))
 # #fit a basic log linear for 2016 forward
@@ -537,6 +535,9 @@ coho_data_tbl_2020 <- coho_data_tbl_2020 |>
     filter(coho_data_tbl_2020, StockID==161, year==2020) |> 
       mutate(year = 2021, spwn = 22558, hvst = 14148, rtrn = spwn + hvst)
   )
+
+#preserved timestamped "data/fram_cwt_smolt_fulljoin_ssc_Oct2021.csv"
+write_csv(coho_data_tbl_2020, "data/fram_cwt_smolt_fulljoin.csv")
 
 ```
 
