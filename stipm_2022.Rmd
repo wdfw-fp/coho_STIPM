@@ -32,7 +32,6 @@ options(mc.cores = 4)
 rstan_options(auto_write = TRUE)
 theme_set(theme_light())
 library(tidybayes)
-library(ggridges)
 
 fp <- list(
   data_fram = "data/postseason_fram_spwn_hvst_ests.csv",
@@ -41,8 +40,8 @@ fp <- list(
   data_full = "data/fram_cwt_smolt_fulljoin.csv"
   )
 
+#combined full dataset
 coho_data_tbl <- readr::read_csv(fp$data_full)
-
 
 # ## dropped FRAM StockID 13 and 43, original pop_ids 10 and 24
 # # fram_stocks <- c(105,93,89,45,51,55,75,81,61,23,149,63,107,115,111,157,97,135,153,101,69,1,85,139,131,127,145,11,17,59,35,29,117,161)
@@ -58,6 +57,7 @@ sf_coord <- coho_data_tbl |>
 
 #ar1, stipm, trailing arith mean, official preseason forecast
 pal_lag_mod <- c("purple", "gold", "cyan", "pink") 
+
 
 ```
 
@@ -367,12 +367,41 @@ write_csv(coho_data_tbl, "data/fram_cwt_smolt_fulljoin.csv")
 
 ```
 
-## TEMP adding 2022 updates
+## 2022 updates
 
-```{r add_prelim_spwn}
-#Pre-CoTC 2020 escapement estimates that feed postseason BackwardsFRAM table. 
-#Not identical to forward FRAM resulting Escapement table values used in other years, but 1) should be close and 2) are what is available.
+```{r fram_tables_2020, eval=FALSE}
+#the relevant data are queried and re-exported as csv
+mdb <- "C:/Users/auerbdaa/Downloads/PSC_CoTC_PostSeason_CohoFRAMDB_thru2020working_021622_rv.mdb"
+#appears to be a mysterious RunID 3 in the Escapement and Mortality tables but not RunID table...
+#aggregate mortality across timesteps for all sources to "estimated total harvest related impacts"
+fram_2020 <- full_join(
+  framr::read_coho_escp(mdb, stocks = sf_coord$StockID, runs = 73) |> 
+    filter(!is.na(RunYear))
+  ,
+  framr::read_coho_mort(mdb, stocks = sf_coord$StockID, runs = 73) |>
+    filter(!is.na(RunYear)) |> 
+    group_by(RunYear, StockID, StockLongName) |> 
+    summarise(hvst = sum(mort), .groups = "drop")
+  ,
+  by = c("RunYear", "StockID", "StockLongName")
+  ) |> 
+  mutate(
+    year = as.numeric(RunYear),
+    spwn = escp, escp = NULL,
+    rtrn = spwn + hvst) |> 
+  select(year, StockID, StockLongName, spwn, hvst, rtrn)
 
+#fram |> filter(StockID == 161) |> print(n = 100)
+
+##write_csv(fram, "data/postseason_fram_spwn_hvst_ests.csv")
+
+```
+
+```{r add_bkfram_2020, eval=FALSE}
+#integrate CoTC 2020 postseason run results
+#pre-2020 unchanged, but would prefer to rebuild from scratch
+#if 2010-2019 can get re-run summer 2022...
+#first left_join is simply adding metadata fields to avoid NAs for 2020 
 coho_data_tbl_2020 <- rows_upsert(
   coho_data_tbl
   ,
@@ -381,16 +410,17 @@ coho_data_tbl_2020 <- rows_upsert(
       distinct(pop_id, pop, StockID, StockLongName, lon, lat, hab_km, smolt_ocn_surv_pop, hat) |> 
       mutate(year = 2020)
     ,
-    readxl::read_excel(
-      "T:/DFW-Salmon Mgmt Modeling Team - General/Escapement files/Coho/fram_coho_escapement_2022.xlsx", 
-      range = "BKFRAM!A4:Y168", col_types = c("numeric", "text", rep("numeric", length(1998:2020)))) |> 
-      select(StockID = `Row Labels`, spwn = `2020`) |> 
-      mutate(year = 2020)
+    fram_2020
+    # readxl::read_excel(
+    #   "T:/DFW-Salmon Mgmt Modeling Team - General/Escapement files/Coho/fram_coho_escapement_2022.xlsx", 
+    #   range = "BKFRAM!A4:Y168", col_types = c("numeric", "text", rep("numeric", length(1998:2020)))) |> 
+    #   select(StockID = `Row Labels`, spwn = `2020`) |> 
+    #   mutate(year = 2020)
     ,
-    by = c("StockID", "year")
+    by = c("StockID", "StockLongName", "year")
   )
   ,
-  by = c("StockID", "year")
+  by = c("StockID", "StockLongName", "year")
 )
 
 # coho_data_tbl |> filter(year >= 2020) |> print(n=50)
@@ -398,7 +428,7 @@ coho_data_tbl_2020 <- rows_upsert(
 
 ```
 
-```{r add_new_smolt}
+```{r add_new_smolt, eval=FALSE}
 ##Jan 20 2022 email from Dr. Litz: "O:/code/coho/forecast_wb/Smolt Time Series Data.csv"
 ## initiated new sheet 
 # coho_data_tbl |>
@@ -415,7 +445,7 @@ coho_data_tbl_2020 <- rows_upsert(
 coho_data_tbl_2020 <- rows_upsert(
   coho_data_tbl_2020
   ,
-  #here have prior years, so append id cols, reversing pattern for escp
+  #here have prior years, so append id cols, reversing pattern above
   left_join(
     readxl::read_excel("O:/code/coho/forecast_wb/Smolt Time Series.xlsx", sheet = "stipm_2022") |> 
       select(year, StockID, smolt) |> 
@@ -432,67 +462,82 @@ coho_data_tbl_2020 <- rows_upsert(
 
 ```
 
-Construct a preliminary harvest from simple regression on escapement
-
-```{r}
-coho_data_tbl |> filter(StockID==161, year>1997) |> ggplot(aes(year, hvst)) + geom_col()
-filter(coho_data_tbl, StockID==161, year>1997) |> ggplot(aes(year, hvst/spwn)) + geom_col()
-filter(coho_data_tbl, StockID==161, year>1997) |> ggplot(aes(year, hvst/(hvst+spwn))) + geom_col()
-
-coho_data_tbl |> filter(StockID==161, year>1997) |> ggplot(aes(spwn, hvst, color = year)) + geom_point() + scale_x_continuous(limits = c(0,100000)) + scale_y_continuous(limits = c(0,100000))
-
-coho_data_tbl |> filter(StockID==161, year>1997) |> ggplot(aes(log(spwn), log(hvst), color = year, label = year)) + geom_point() + geom_text() + geom_smooth(method = "lm")# + facet_wrap(~year>2015)
-
-summary(lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, year>1997)))
-#tightening to recent years in lower return regime (also boosts r2) 
-summary(lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, year>=2016)))
-predict(
-  lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, between(year, 2016, 2019))),
-  filter(coho_data_tbl_2020, StockID==161, year==2020)
-  ) |> exp() #6270
-```
-
-
-```{r}
-# #add just WB
-coho_data_tbl_2020 <- rows_upsert(
-  coho_data_tbl_2020
-  ,
-  filter(coho_data_tbl_2020, StockID==161, year==2020) |>
-    mutate(hvst = 6270, rtrn = spwn + hvst)
-  ,
-  by = c("StockID", "year"))
-
-## OR add stocks with decent correlations and r2 in recent years
-coho_data_tbl_2020 <- rows_upsert(
-  coho_data_tbl_2020
-  ,
-  coho_data_tbl |> 
-    filter(between(year, 2016, 2019)) |> 
-    group_by(StockID, StockLongName) |> nest() |> #very similar to nest_by
-    summarise(
-      corr = map_dbl(data, ~cor(log(.x$hvst), log(.x$spwn))),
-      fit = map(data, ~lm(log(hvst) ~ log(spwn), data = .x)),
-      .groups = "keep"
-    ) |> 
-    left_join(
-      filter(coho_data_tbl_2020, year == 2020) |> select(StockID, StockLongName, spwn)
-      , by = c("StockID", "StockLongName")
-    ) |> 
-    nest(newdata = spwn) |> 
-    mutate(
-      r2 = map_dbl(fit, ~summary(.x) |> pluck("r.squared")),
-      hvst = map2_dbl(fit, newdata, ~predict.lm(.x, newdata = .y) |> exp())
-    ) |>
-    unnest(newdata) |> ungroup() |> 
-    arrange(desc(r2, corr)) |> #print(n = 50)
-    filter(corr >= 0.8, r2 > 0.8, !is.na(hvst)) |> 
-    mutate(rtrn = spwn + hvst, year = 2020) |> 
-    select(StockID, StockLongName, year, spwn, hvst, rtrn)  
-  ,
-  by = c("StockID", "year"))
+```{r NOT_RUN_FINAL_add_pseudohvst, eval=FALSE}
+# # coho_data_tbl |> filter(StockID==161, year>1997) |> ggplot(aes(year, hvst)) + geom_col()
+# # filter(coho_data_tbl, StockID==161, year>1997) |> ggplot(aes(year, hvst/spwn)) + geom_col()
+# # filter(coho_data_tbl, StockID==161, year>1997) |> ggplot(aes(year, hvst/(hvst+spwn))) + geom_col()
+# # 
+# # coho_data_tbl |> filter(StockID==161, year>1997) |> ggplot(aes(spwn, hvst, color = year)) + geom_point() + scale_x_continuous(limits = c(0,100000)) + scale_y_continuous(limits = c(0,100000))
+# # 
+# # coho_data_tbl |> filter(StockID==161, year>1997) |> ggplot(aes(log(spwn), log(hvst), color = year, label = year)) + geom_point() + geom_text() + geom_smooth(method = "lm")# + facet_wrap(~year>2015)
+# # 
+# # summary(lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, year>1997)))
+# # #tightening to recent years in lower return regime (also boosts r2) 
+# # summary(lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, year>=2016)))
+# # predict(
+# #   lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl, StockID==161, between(year, 2016, 2019))),
+# #   filter(coho_data_tbl_2020, StockID==161, year==2020)
+# #   ) |> exp() #6270
+# 
+# # #add just WB
+# coho_data_tbl_2020 <- rows_upsert(
+#   coho_data_tbl_2020
+#   ,
+#   filter(coho_data_tbl_2020, StockID==161, year==2020) |>
+#     mutate(hvst = 6270, rtrn = spwn + hvst)
+#   ,
+#   by = c("StockID", "year"))
+# 
+# # ## OR add stocks with decent correlations and r2 in recent years
+# # coho_data_tbl_2020 <- rows_upsert(
+# #   coho_data_tbl_2020
+# #   ,
+# #   coho_data_tbl |> 
+# #     filter(between(year, 2016, 2019)) |> 
+# #     group_by(StockID, StockLongName) |> nest() |> #very similar to nest_by
+# #     summarise(
+# #       corr = map_dbl(data, ~cor(log(.x$hvst), log(.x$spwn))),
+# #       fit = map(data, ~lm(log(hvst) ~ log(spwn), data = .x)),
+# #       .groups = "keep"
+# #     ) |> 
+# #     left_join(
+# #       filter(coho_data_tbl_2020, year == 2020) |> select(StockID, StockLongName, spwn)
+# #       , by = c("StockID", "StockLongName")
+# #     ) |> 
+# #     nest(newdata = spwn) |> 
+# #     mutate(
+# #       r2 = map_dbl(fit, ~summary(.x) |> pluck("r.squared")),
+# #       hvst = map2_dbl(fit, newdata, ~predict.lm(.x, newdata = .y) |> exp())
+# #     ) |>
+# #     unnest(newdata) |> ungroup() |> 
+# #     arrange(desc(r2, corr)) |> #print(n = 50)
+# #     filter(corr >= 0.8, r2 > 0.8, !is.na(hvst)) |> 
+# #     mutate(rtrn = spwn + hvst, year = 2020) |> 
+# #     select(StockID, StockLongName, year, spwn, hvst, rtrn)  
+# #   ,
+# #   by = c("StockID", "year"))
 
     
+```
+
+```{r add_2021_prelim_WB_and_export}
+# filter(coho_data_tbl_2020, StockID==161, between(year, 2016, 2020)) |> 
+#   ggplot(aes(spwn, hvst)) + geom_label(aes(label = year))
+# #fit a basic log linear for 2016 forward
+# #then predict from 23558 NOS+NOB prelim estimate
+# #from 2022 WB4 Coho Forecast Model Draft 02.03.2022, sheet Spawning & Hatchery Escapements!CO33
+# predict(
+#   lm(log(hvst) ~ log(spwn), data = filter(coho_data_tbl_2020, StockID==161, between(year, 2016, 2020))),
+#   filter(coho_data_tbl_2020, StockID==161, year==2020) |> 
+#     mutate(year = 2021, spwn = 23558, hvst = NA, rtrn = NA)
+# ) |> exp() #14148
+
+coho_data_tbl_2020 <- coho_data_tbl_2020 |> 
+  bind_rows(
+    filter(coho_data_tbl_2020, StockID==161, year==2020) |> 
+      mutate(year = 2021, spwn = 22558, hvst = 14148, rtrn = spwn + hvst)
+  )
+
 ```
 
 
@@ -1244,8 +1289,8 @@ print(c("spwn", range(stan_data_list$spwn$year)))
 print(c("hvst", range(stan_data_list$hvst$year)))
 print(c("rtrn", range(stan_data_list$rtrn$year)))
 
-fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
-fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
+fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 400, n_chain = 4)
+fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 500, n_chain = 4)
 
 # # #on AWS
 # fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 4000, n_chain = 4)
@@ -1261,14 +1306,15 @@ fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 200, n_chain = 2)
 # #per year have rows = 4chains * post-warmup
 # 
 # fit_ar1 <- readRDS("O:/code/coho/forecast_wb/full_data_fit_ar1.rds")
-# 
+# fit_stipm <- readRDS("O:/code/coho/forecast_wb/full_data_fit_stipm.rds")
+
+ 
 fit_ar1_wb <- spread_draws(fit_ar1, adult_est[n_year,n_pop] | n_pop) |>
   ungroup() |> select(n_year, .iteration, rtrn = `34`) |>
   mutate(year = first(stan_data_list$y_min_max)-1+n_year, mod = "ar1")
 # 
 # saveRDS(fit_ar1_wb, "fit_ar1_wb_adult_est.rds")
 # 
-# fit_stipm <- readRDS("O:/code/coho/forecast_wb/full_data_fit_stipm.rds")
 # #stipm requires constructing total return from harvest + spawning adults
 fit_stipm_wb <- full_join(
   spread_draws(fit_stipm, adult_est[n_year,n_pop] | n_pop) |>
@@ -1327,12 +1373,11 @@ bind_rows(fit_ar1_pred, fit_stipm_pred) |>
   pivot_wider(names_from = mod, values_from = `2.5%`:`97.5%`) |> 
   select(year:pop_id, contains("50%"))
 
-
 ```
 
 ```{r}
-fit_ar1_wb <- readRDS( "fit_ar1_wb_adult_est.rds")
-fit_stipm_wb <- readRDS("fit_stipm_wb_adult_est.rds")
+# fit_ar1_wb <- readRDS( "fit_ar1_wb_adult_est.rds")
+# fit_stipm_wb <- readRDS("fit_stipm_wb_adult_est.rds")
 
 est_wb_rtrn <- bind_rows(
   fit_ar1_wb |> select(mod, year, rtrn), 
@@ -1379,7 +1424,7 @@ est_wb_rtrn |>
 
 ```
 
-```{r}
+```{r pdrw}
 pdrw <- bind_rows(
   #stipm
   #pre-fcst year estimate series
@@ -1413,7 +1458,7 @@ pdrw <- bind_rows(
 
 ```
 
-```{r}
+```{r ggfcst_ts}
 ggfcst_ts <- function(stk = 161) {
   pdrw_stk <- filter(pdrw, StockID == stk, between(year, 1998, 2022))
   
@@ -1423,6 +1468,10 @@ ggfcst_ts <- function(stk = 161) {
   ggplot(pdrw_stk, aes(year, rtrn)) +
     stat_lineribbon(aes(fill = mod), alpha = 0.4, show.legend = F) +
     geom_point(data = filter(stan_data_list$rtrn, StockID==stk), color = 1) +
+    geom_text(
+      data = filter(pdrw_stk, year == 2022) |> group_by(mod, year) |> summarise(rtrn = round(median(rtrn)), .groups = "drop"),
+      aes(label = scales::comma(rtrn)),
+      nudge_x = 1.5) +
     facet_wrap(~mod) +
     scale_fill_discrete(type = pal_lag_mod[1:2]) +
     #scale_x_continuous("", breaks = 1998:2022,  guide = guide_axis(n.dodge = 2)) +
@@ -1443,5 +1492,112 @@ ggfcst_ts_coast <- map(
  ~ggfcst_ts(.x))
 
 patchwork::wrap_plots(ggfcst_ts_coast)
+
+ggfcst_ts(135) #Hoh
+ggfcst_ts(131) #Quill Fall
+
+ggfcst_ts_hc <- map(c(45, 51, 55, 59) |> set_names(), ~ggfcst_ts(.x))
+patchwork::wrap_plots(ggfcst_ts_hc[c(1,3,4)], ncol = 1)
+
+ggfcst_ts_jdf <- map(c(107, 111, 115, 117) |> set_names(), ~ggfcst_ts(.x))
+patchwork::wrap_plots(ggfcst_ts_jdf)
+
+ggfcst_ts_stsno <- map(c(29, 35) |> set_names(), ~ggfcst_ts(.x))
+patchwork::wrap_plots(ggfcst_ts_stsno, ncol = 1)
+
+bind_rows(fit_ar1_pred, fit_stipm_pred) |> 
+  filter(StockID %in% c(29)) |> 
+  select(year, mod, StockID, StockLongName, pop_id, `2.5%`,`25%`,`50%`,`75%`,`97.5%`) |> 
+  pivot_wider(names_from = mod, values_from = `2.5%`:`97.5%`)
+
+```
+
+## extract MS
+
+```{r}
+# boot::inv.logit()
+# or: function(x) { exp(x)/(1+exp(x)) }
+
+# summary(fit_stipm, pars = "mu_mu_surv")$summary |>
+#   as.data.frame() |> rownames_to_column("stan_out") |> tibble()
+
+ms <- summary(fit_stipm, pars = "logit_smolt_survival_pop")$summary |>
+  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+  mutate(
+    across(`2.5%`:`97.5%`, ~(exp(.)/(1+exp(.)))),
+    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+    yr = str_remove_all(stan_out, "logit_smolt_survival_pop\\[|\\]") |> str_split(",") |> map_dbl(~as.numeric(.x[1])),
+    year = yr + first(stan_data_list$y_min_max) - 1,
+    pop_id = str_remove_all(stan_out, "logit_smolt_survival_pop\\[|\\]") |> str_split(",") |> map_dbl(~as.numeric(.x[2])),
+    mod = "stipm",
+    n_diverg = get_sampler_params(fit_stipm, inc_warmup = FALSE) |>
+      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+  ) |>
+  left_join(distinct(coho_data_tbl, pop_id, StockID, StockLongName), by = "pop_id")
+
+patchwork::wrap_plots(list(
+  
+ms |> filter(StockID==161) |> ggplot(aes(year, `50%`)) + geom_line() + geom_point() + geom_smooth(se = F) + scale_y_continuous("median posterior marine survival", labels = scales::percent) + labs(subtitle = "WB nat")
+
+,
+ms |> filter(StockID==161) |> 
+  select(StockID, StockLongName, year, `2.5%`:`97.5%`) |> 
+  pivot_longer(names_to = "q", values_to = "est", `2.5%`:`97.5%`) |>  
+  ggplot(aes(q, est, color = q)) + 
+  geom_boxplot(aes(fill = q), alpha = 0.4) + scale_y_continuous("median posterior marine survival", labels = scales::percent)
+))
+
+#EJDF and WJDF
+ms |> filter(StockID %in% c(115,117)) |> ggplot(aes(year, `50%`, color = StockLongName)) + geom_line() + geom_point() + geom_smooth(se = F) + scale_y_continuous("median posterior marine survival", labels = scales::percent)
+
+#Queets
+ms |> filter(StockID==139) |> ggplot(aes(year, `50%`)) + geom_line() + geom_point() + geom_smooth(se = F) + scale_y_continuous("median posterior marine survival", labels = scales::percent) + labs(subtitle = "Queets nat")
+```
+
+
+```{r}
+#Coastal per requests, export "for consideration, use at your own risk" 
+list(
+  marine_surv = ms |> 
+    filter(StockID > 125) |> 
+    group_by(StockID, StockLongName, year) |> 
+    summarise(across(c(n_eff, Rhat, `2.5%`:`97.5%`), median), .groups = "drop")
+  ,
+  rtrn = pdrw |> 
+    filter(StockID > 125) |> 
+    group_by(mod, StockID, StockLongName, year) |> 
+    summarise(across(rtrn, median), .groups = "drop")
+) |>
+  writexl::write_xlsx("T:/DFW-Salmon Mgmt Modeling Team - General/Preseason/Coho/2022/forecasts/stipm_prelim_2022_estimates.xlsx")
+
+
+ms |> 
+  filter(StockID > 125) |> 
+  ggplot(aes(year, `50%`, color = StockLongName)) + 
+  geom_line(show.legend = T) + geom_point(show.legend = F) + geom_smooth(se = F, show.legend = F) + geom_hline(yintercept = 0.085) + 
+  scale_y_continuous("median posterior marine survival", labels = scales::percent) + 
+  #facet_wrap(~StockLongName, ncol = 1) +
+  theme(text = element_text(size = 20))
+
+```
+
+
+```{r}
+smolt <- summary(fit_stipm, pars = "smolt_est")$summary |>
+  as.data.frame() |> rownames_to_column("stan_out") |> tibble() |>
+  mutate(
+    #across(`2.5%`:`97.5%`, ~(exp(.)/(1+exp(.)))),
+    var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
+    yr = str_remove_all(stan_out, "smolt_est\\[|\\]") |> str_split(",") |> map_dbl(~as.numeric(.x[1])),
+    year = yr + first(stan_data_list$y_min_max) - 1,
+    pop_id = str_remove_all(stan_out, "smolt_est\\[|\\]") |> str_split(",") |> map_dbl(~as.numeric(.x[2])),
+    mod = "stipm",
+    n_diverg = get_sampler_params(fit_stipm, inc_warmup = FALSE) |>
+      map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
+  ) |>
+  left_join(distinct(coho_data_tbl, pop_id, StockID, StockLongName), by = "pop_id")
+
+smolt |> filter(StockID == 135)
+
 ```
 
