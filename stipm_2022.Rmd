@@ -1278,8 +1278,8 @@ ggfcst_ts <- function(stk = 161) {
     #scale_x_continuous("", breaks = 1998:2022,  guide = guide_axis(n.dodge = 2)) +
     scale_x_continuous("", breaks = seq(1998, 2022, by = 2),  guide = guide_axis(angle = 45)) +
     scale_y_continuous("Forecast return", labels = scales::comma) +
-    labs(title = paste(pdrw_stk$StockLongName[1], "Preliminary 2022 forecast"), 
-         subtitle = "Posterior intervals of fits to 1998-2020 data",
+    labs(title = paste(pdrw_stk$StockLongName[1], "2022 forecast"), 
+         subtitle = "Posterior intervals of fits to data since 1998",
          fill = "Model") +
     theme_light(base_size = 13)
 }
@@ -1336,19 +1336,24 @@ pdrw |>
   scale_x_continuous("Estimated return", labels = scales::comma) +
   scale_fill_discrete(type = pal_lag_mod[1:2], aesthetics = c("color", "fill")) +
   theme(legend.position = "top", legend.title = element_blank())
+```
 
 
-# bind_rows(fit_ar1_pred, fit_stipm_pred) |> 
-#   filter(StockID==161) |> 
-#   summarise(across(`50%`, ~mean(.)))
-# 
-# pdrw |> 
-#   filter(StockID==161, year == 2022) |> 
-#   group_by(mod) |> 
-#   summarise(across(rtrn, ~quantile(., p=seq(0.4, 0.6, by = 0.01))), .groups = "drop") |> 
-#   mutate(p = rep(seq(0.4, 0.6, by = 0.01), 2)) |> 
-#   pivot_wider(names_from = mod, values_from = rtrn) |> print(n=30)
+```{r median_midpoint, eval=FALSE}
+#stack weighting for 2023...
+bind_rows(fit_ar1_pred, fit_stipm_pred) |>
+  filter(StockID==161) |>
+  summarise(across(`50%`, ~mean(.)))
 
+pdrw |>
+  filter(StockID==161, year == 2022) |>
+  group_by(mod) |>
+  summarise(across(rtrn, ~quantile(., p=seq(0.4, 0.6, by = 0.01))), .groups = "drop") |>
+  mutate(p = rep(seq(0.4, 0.6, by = 0.01), 2)) |>
+  #pivot_wider(names_from = mod, values_from = rtrn) |> print(n=30)
+  group_by(mod) |> slice_min(abs(35481 - rtrn), n = 1)
+
+35481*1.2315 #43695
 ```
 
 
