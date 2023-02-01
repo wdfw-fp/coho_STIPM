@@ -107,6 +107,112 @@ d23 <- rows_upsert(
 )
 
 
+lm(
+  log(hvst) ~ log(spwn), 
+  data = d23 |> filter(StockID==161, between(year, 2016, 2020))
+) |> 
+  predict(
+  filter(d23, StockID==161, year==2021) #|>
+    #mutate(year = 2022, spwn = 29263, hvst = NA, rtrn = NA)
+    #mutate(spwn = 23588, hvst = NA, rtrn = NA)
+) |> exp() 
+
+
+lu_sar <- read_csv("smolt_survival_hatchery_release_location.csv") |> 
+  mutate(watershed = str_replace(watershed, "Creek", "Crk")) |> 
+  unite("smolt_ocn_surv_pop", watershed, rearing_type, sep = " ", remove = F)
+rmis_rec <- read_csv("~/T/DFW-Salmon Mgmt Modeling Team - General/PS Coho Run Reconstruction/2021/rmis_recs_2019_2022.csv")
+rmis_all_rel <- read_csv("~/T/DFW-Salmon Mgmt Modeling Team - General/PS Coho Run Reconstruction/2021/rmis_releases_all_coho_by2010_onward.csv")
+
+#all prior smolt_ocn_surv_pops exist in this LU
+d22 |> drop_na(est_n_rec, est_n_rel) |> distinct(StockID, smolt_ocn_surv_pop) |> arrange(StockID) |> 
+  left_join(lu_sar, by = "smolt_ocn_surv_pop")
+
+#pop_meta |> arrange(StockID) |> drop_na(smolt_ocn_surv_pop) |> pull(smolt_ocn_surv_pop) |> paste(collapse = "', '")
+ocn_surv_pops <- c('Nooksack H', 'Skagit H', 'Baker W', 'Big Beef Crk W', 'Quilcene H', 'Skokomish H', 'Deschutes W', 'Kalama Crk H', 'Minter Crk W', 'Puyallup H', 'Green H', 'Dungeness H', 'Quinault H', 'Bingham Crk W', 'Willapa H')
+
+#checking against original "O:/code/coho/forecast_wb/coho SARs_to extend.xlsx", sheet = "CWT_FRAM_Matches_complete202108"
+#"Calendar Year" == brood_year + 2, or recovery year if 3yo 
+#as well as:
+d22 |> 
+  drop_na(est_n_rec, est_n_rel) |> 
+  filter(year > 2009) |> 
+  distinct(StockID, StockLongName, smolt_ocn_surv_pop, year, est_n_rec, est_n_rel) |> 
+  filter(str_detect(smolt_ocn_surv_pop, "Willapa"))
+
+inner_join(
+  lu_sar |> filter(smolt_ocn_surv_pop %in% ocn_surv_pops), 
+  rmis_all_rel,
+  by = c("species", "hatchery_location_code", "release_location_code", "rearing_type", "run")
+) |> 
+  #count(watershed) |> view()
+  #filter(str_detect(smolt_ocn_surv_pop, "Willapa")) |> #2012 includes untagged in orig
+  #filter(str_detect(smolt_ocn_surv_pop, "Bingham")) |> #mismatch 2012 & 2013 maybe related to "release_scalar"
+  #filter(str_detect(smolt_ocn_surv_pop, "Green")) |> #mismatches before 2018, not clear why
+  select(smolt_ocn_surv_pop, brood_year, tag_code = tag_code_or_release_id, release_scalar, tagged_adclipped:untagged_unknown) |> #watershed, rearing_type, id,
+  mutate(
+    rec_year = brood_year + 2, #"Calendar Year" in orig 
+    est_n_rel = (tagged_adclipped + tagged_unclipped) * release_scalar
+    ) |> 
+  arrange(brood_year) |> 
+#filter(rec_year==2012) |> 
+  group_by(smolt_ocn_surv_pop, brood_year, rec_year) |> #watershed, rearing_type,
+  summarise(across(est_n_rel, sum), .groups = "drop") |> 
+  left_join(
+    d22 |> 
+      drop_na(est_n_rec, est_n_rel) |> 
+      filter(year > 2009) |> 
+      distinct(StockID, StockLongName, smolt_ocn_surv_pop, year, est_n_rec_orig = est_n_rec, est_n_rel_orig = est_n_rel)
+    , by = c("smolt_ocn_surv_pop", "rec_year" = "year")
+  ) |> 
+  drop_na(est_n_rel_orig) |> filter(round(est_n_rel) != round(est_n_rel_orig))
+
+
+inner_join(
+  lu_sar |> filter(smolt_ocn_surv_pop %in% ocn_surv_pops), 
+  rmis_all_rel,
+  by = c("species", "hatchery_location_code", "release_location_code", "rearing_type", "run")
+) |> 
+  select(smolt_ocn_surv_pop, brood_year, tag_code = tag_code_or_release_id, release_scalar, tagged_adclipped:untagged_unknown) |>
+  mutate(
+    rec_year = brood_year + 2, #"Calendar Year" in orig 
+    est_n_rel = (tagged_adclipped + tagged_unclipped) * release_scalar
+    ) |>
+  arrange(brood_year) |> 
+  select(-contains("agged")) |> 
+  filter(est_n_rel > 0) |> 
+  left_join(
+    rmis_rec |> 
+      drop_na(estimated_number) |> 
+      mutate(
+        rec_year = lubridate::year(as.Date(as.character(recovery_date), format = "%Y%m%d")),
+        rec_year = if_else(is.na(rec_year) & nchar(as.character(recovery_date)) == 4,
+                       as.integer(recovery_date), as.integer(rec_year)),
+        rec_year = if_else(is.na(rec_year) & nchar(as.character(recovery_date)) == 6,
+                       as.integer(str_sub(as.character(recovery_date),1,4)), as.integer(rec_year)),
+        rec_age = rec_year - brood_year
+      ) |> 
+      #group_by(tag_code, rec_year, rec_age) |> 
+      group_by(tag_code) |> 
+      summarise(est_n_rec = sum(estimated_number), .groups = "drop")
+    ,
+    #by = c("tag_code", "rec_year")
+    by = c("tag_code")
+  ) |> 
+  group_by(smolt_ocn_surv_pop, brood_year, rec_year) |> #watershed, rearing_type,
+  summarise(across(c(est_n_rel, est_n_rec), ~sum(., na.rm = T)), .groups = "drop") |> 
+ left_join(
+    d22 |> 
+      drop_na(est_n_rec, est_n_rel) |> 
+      filter(year > 2009) |> 
+      distinct(StockID, StockLongName, smolt_ocn_surv_pop, year, est_n_rec_orig = est_n_rec, est_n_rel_orig = est_n_rel)
+    , by = c("smolt_ocn_surv_pop", "rec_year" = "year")
+  ) |> 
+  filter(rec_year > 2017) |> 
+  drop_na(est_n_rel_orig)
+
+
+
 
 ## IF REBUILDING FROM COTC MDB STARTING POINT 
 ## TAMMS at "DFW-Salmon Mgmt Modeling Team - General/FRAM Validation Runs/Coho/"
@@ -171,7 +277,11 @@ readxl::read_excel("~/O/code/coho/forecast_wb/Smolt Time Series.xlsx", sheet = "
 #not updated in 2022 run, since SSC values deemed still applicable
 d22 |> 
   drop_na(est_n_rec, est_n_rel) |> 
-  distinct(StockID, year, est_n_rec, est_n_rel)
+  filter(year > 2009) |> 
+  distinct(StockID, StockLongName, smolt_ocn_surv_pop, year, est_n_rec, est_n_rel) |> 
+  #count(smolt_ocn_surv_pop)
+  #split(~StockID)
+  filter(str_detect(smolt_ocn_surv_pop, "Willapa"))
 
 ```
 
