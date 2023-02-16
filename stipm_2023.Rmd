@@ -5,7 +5,7 @@ date: "`r Sys.Date()`"
 params:
   f_pop_stock_metadata: "data/pop_stock_metadata.csv"
   f_prior_year_dataset: "data/fram_cwt_smolt_fulljoin_for2022.csv"
-  f_fram_mdb: "~/O/code/coho/fram_mdbs/PSC_CoTC_PostSeason_CohoFRAMDB_thru2020_021622.mdb"
+  f_fram_mdb: "~/O/code/coho/fram_mdbs/PSC_CoTC_PostSeason_CohoFRAMDB_thru2021_021523.mdb"
   f_fram_prelim_escp: "~/T/DFW-Salmon Mgmt Modeling Team - General/Escapement files/Coho/fram_coho_escapement_2023.xlsx"
   f_smolt_migrants: "data/Smolt Time Series.xlsx"
   f_cwt_rel_rec_lookup: "data/rmis_survival_hatchery_release_location.csv"
@@ -15,7 +15,6 @@ editor_options:
   chunk_output_type: console
 output: 
   bookdown::html_document2
-
 ---
 
 # Summary
@@ -50,7 +49,11 @@ pop_stock_metadata_sf <- pop_stock_metadata |>
 #ar1, stipm, trailing arith mean, official preseason forecast
 pal_lag_mod <- c("purple", "gold", "cyan", "pink") 
 
-
+# see below for update integration:
+# - first as 'prelim' with smolts, CWTs, escp and lm(log(hvst) ~ log(spwn))
+# - then redone after CoTC postseason mdb available
+#coho_data_tbl_prelim <- read_csv("data/fram_cwt_smolt_fulljoin_for2023_prelim.csv")
+coho_data_tbl <- read_csv("data/fram_cwt_smolt_fulljoin_for2023.csv")
 
 
 # pdrw <- readRDS("O:/code/coho/forecast_wb/pdrw_2020.rds")
@@ -110,8 +113,9 @@ fram_mdb_reader <- function(
 }
 
 fram_stocks <- c(105,93,89,45,51,55,75,81,61,23,149,63,107,115,111,157,97,135,153,101,69,1,85,139,131,127,145,11,17,59,35,29,117,161)
-fram_runs <- 22:44 #1998-2020, but 34:44 2010onward
+fram_runs <- 22:45 #1998 forward, or 34 start for 2010 onward
 fram <- list()
+
 #Note the original negative escapement in A12A Wild in 2005 is due to an error in the FRAM database
 #here, spwn is coerced to 0, but harvest is unaffected b/c drawn directly from Mortality
 #note also inserting NAs for Grays Hbr Misc Wild missing 2000 & 2001 in FRAM mdb (Area 13A Miscellaneous Wild missing 1996, but now 1998-forward)
@@ -127,7 +131,9 @@ fram$escp <- fram_mdb_reader(fram_table = "Escapement") |>
   mutate(spwn = if_else(spwn < 0, 0.01, spwn))
 fram$mort <- fram_mdb_reader(fram_table = "Mortality") |> 
   filter(StockID %in% fram_stocks, RunID %in% fram_runs) |> 
-  mutate(mort = LandedCatch+NonRetention+Shaker+DropOff + MSFLandedCatch+MSFNonRetention+MSFShaker+MSFDropOff) |> 
+  mutate(
+    mort = LandedCatch+NonRetention+Shaker+DropOff + MSFLandedCatch+MSFNonRetention+MSFShaker+MSFDropOff
+    ) |> 
   group_by(RunID, StockID) |> 
   summarise(hvst = sum(mort), .groups = "drop")
 
@@ -276,7 +282,7 @@ Currently, the most recent complete post-season run becomes available during Feb
 
 Compiled escapement estimates and simple regression-based estimates of stock specific catch can be added in order to produce preliminary forecasts before this database becomes available.
 
-Further preliminary escapement estimates for the most recent year can be added if available, with harvest following the same approach as for the not-yet-available FRAM post-season run.
+Further preliminary escapement estimates for the most recent year can also be added if available, with harvest following the same approach as for a not-yet-available FRAM post-season run.
 
 ```{r coho_data_tbl_prelim, eval=FALSE}
 coho_data_tbl_prelim <- coho_data_tbl |> 
@@ -296,7 +302,6 @@ coho_data_tbl_prelim <- coho_data_tbl |>
            "year")
   )
 
-coho_data_tbl_prelim |> filter(year==2021) |> print(n=50)
 
 # need hvst and rtrn to run prelim AR1
 # this adds a log-linear guess of 2021 harvest for stocks with r^2 > 0.4 in 2016-2020
@@ -338,13 +343,17 @@ coho_data_tbl_prelim <- rows_upsert(
 coho_data_tbl_prelim |> filter(is.na(pop_id))
 coho_data_tbl_prelim |> filter(is.na(rtrn)) |> print(n=50)
 coho_data_tbl_prelim |> filter(year==2021) |> print(n=50)
+```
 
-
+```{r coho_data_tbl_add_WB_most_recent_write_csv, eval=FALSE}
 # WB 2022 prelims:
 #  nat UM: 29263 NOS + 423 NOB = spwn = 29686
 #  (hat M: 10484 HOS + 59019 HOB)
-coho_data_tbl_prelim <- rows_upsert(
-  coho_data_tbl_prelim
+
+# coho_data_tbl_prelim <- rows_upsert(
+#   coho_data_tbl_prelim
+coho_data_tbl <- rows_upsert(
+  coho_data_tbl
   ,
   right_join(
     pop_stock_metadata,
@@ -366,8 +375,10 @@ coho_data_tbl_prelim <- rows_upsert(
 )
 
 coho_data_tbl_prelim |> filter(year==2022) |> print(n=50)
+coho_data_tbl |> filter(year==2022) |> print(n=50)
 
-write_csv(coho_data_tbl_prelim, "data/fram_cwt_smolt_fulljoin_for2023_prelim.csv")
+#write_csv(coho_data_tbl_prelim, "data/fram_cwt_smolt_fulljoin_for2023_prelim.csv")
+write_csv(coho_data_tbl, "data/fram_cwt_smolt_fulljoin_for2023.csv")
 
 ```
 
@@ -415,7 +426,7 @@ stan_data_filter <- function(
   return(stan_data)
 }
 
-#stan_data_filter(coho_data_tbl_prelim, 2019, 2022) |> map(tail) 
+#stan_data_filter(coho_data_tbl, 2019, 2022) |> map(tail) 
 ```
 
 Next, wrappers to the `rstan::stan` function facilitate repeated fitting with consistent control parameters and input data lists.
@@ -954,14 +965,17 @@ perf_smry(161)
 This chunk performs the actual fits, with the final set of commented lines left for convenience when running more iterations and chains on AWS.
 
 ```{r full_data_fit}
+#coho_data_tbl <- coho_data_tbl_prelim
+
 #use all data
 (
   stan_data_list <- stan_data_filter(
     coho_data_tbl,
-    data_year_min = 1998, data_year_max = 2023, 
+    data_year_min = 1998, data_year_max = 2022, 
     lag_smolt = 0, lag_MS = 0, lag_spwn = 0, lag_hvst = 0)
 )
 
+fit_ar1 <- stan_ar1(stan_data = stan_data_list)
 fit_stipm <- stan_stipm(stan_data = stan_data_list)
 
 # # #can construct estimates beyond desired forecast year by "tricking" the wrapper that sets n_year
@@ -1060,7 +1074,7 @@ fit_stipm_pred |>
   print(n=40)
 
 bind_rows(fit_ar1_pred, fit_stipm_pred) |> 
-  filter(between(StockID, 130, 170)) |> 
+  #filter(between(StockID, 130, 170)) |> 
   select(year, mod, StockID, StockLongName, pop_id, `2.5%`,`25%`,`50%`,`75%`,`97.5%`) |> 
   pivot_wider(names_from = mod, values_from = `2.5%`:`97.5%`) |> 
   select(year:pop_id, contains("50%"))
