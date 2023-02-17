@@ -526,23 +526,24 @@ stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
 }
 ```
 
-# One-ahead *post-hoc* forecast
+# One-ahead *post-hoc* forecast performance evaluation
 
-This section not run for 2022, but left inline in anticipation of being revisited for 2023. The alternative data lags examined for the Oct 2021 review will be reduced to a single configuration, reflecting the actual experience of application in 2022.
+This section not rerun for 2023, but revised to a single set of data lags reflecting as-applied experience. The one-at-a-time model fitting proceeds by iterating through a vector of "max data years", predicting the following year by first filtering down a subset of the estimation data, then calling the stan models, and then extracting diagnostic and posterior results. Deterministic trailing means of the OA3 return are also generated for comparison.
 
-The one-at-a-time model fitting proceeds by iterating through a vector of "max data years", predicting the following year by first filtering down a subset of the estimation data, then calling the stan models, and then extracting diagnostic and posterior results.
+```{r oat_wrap, eval=FALSE}
+#intermediate per-year saved out within map() in case of loop disruptions
+#lag defaults based on 2022 and 2023 forecast application
+#to predict 2023, max possible data year is 2022
+#using lag_spwn/hvst=1 gives 2021 FRAM
+#with lag_smolt=0 for 2022 outmigrants
+#and lag_MS=2 gives 2020 RMIS recoveries
+#which was latest mostly complete brood
 
-```{r oat, eval=FALSE}
-#intermediary single year output is saved out within map() in case of loop disruptions
-#a dataset data_year_max of 2014, predicting 2015, with default lags of 2 gives FRAM/spwn through 2012
-#but with "compiling" lags of 1 gives FRAM/spwn through 2013
-
-oat_wrap <- function(iter, #3K 
-                     chain, #4
-                     oat_data_year_min, #1998,
-                     oat_years_max, #2008:2018, #max data year, predicting 2009:2019
-                     lag_spwn, lag_hvst, lag_MS, lag_smolt #deducted from data year
-                     ){
+oat_wrap <- function(
+    iter, chain, oat_data_year_min, oat_years_max,
+    #deducted from data year
+    lag_spwn = 1, lag_hvst = 1, lag_MS = 2, lag_smolt = 0
+){
   #build a list named by max data year 
   oat <- set_names(oat_years_max) |> 
     map(function(x) {
@@ -588,81 +589,62 @@ oat_wrap <- function(iter, #3K
         left_join(distinct(coho_data_tbl, pop_id, pop, StockID), by = "pop_id")
 
       pred_out <- bind_rows(fit_ar1_pred, fit_stipm_pred)
-      saveRDS(pred_out, paste0("oat_fits/oat_pred_",x+1,"_lags_spwn",lag_spwn,"_hvst",lag_hvst,"_MS",lag_MS,"_smolt",lag_smolt,".rds"))
+      saveRDS(pred_out, 
+              paste0("oat_pred_",x+1,"_lags_spwn",lag_spwn,"_hvst",lag_hvst,"_MS",lag_MS,"_smolt",lag_smolt,".rds"))
       return(pred_out) #list element for max-data-year-x 
     })
   return(oat)
 }
-
-# #REDUCE TO A SINGLE CONFIGURATION REFLECTING 2022 APPLICATION
-# #predicting 2009:2019; renaming objects with lags relative to prediction year (rather than data year, as in args)
-# oat_lag3 <- oat_wrap(iter = 3000, chain = 4, oat_data_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 2, lag_hvst = 2, lag_MS = 1, lag_smolt = 0)
-# oat_lag2 <- oat_wrap(iter = 3000, chain = 4, oat_data_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 1, lag_hvst = 1, lag_MS = 1, lag_smolt = 0)
-# oat_lag1 <- oat_wrap(iter = 3000, chain = 4, oat_data_year_min = 1998, oat_years_max = 2008:2018, lag_spwn = 0, lag_hvst = 0, lag_MS = 1, lag_smolt = 0)
-
 ```
 
-# Results
+```{r oat_out_run, eval=FALSE}
+#run the actual loop, predicting 2009 forward
+#can tweak iterations and chains if desired
+oat_out <- oat_wrap(
+  iter = 1000, chain = 2, 
+  oat_data_year_min = 1998, 
+  oat_years_max = 2008:2020,
+  lag_spwn = 1, lag_hvst = 1, 
+  lag_MS = 2, lag_smolt = 0
+  )
 
-As above, this section not run for 2022, but left inline in anticipation of being revisited for 2023, at which time the comparison of alternative data lags can be removed.
-
-Saved output from the one-ahead runs is read back into memory and joined with observations to allow examination of performance skill.
+```
 
 ```{r read_bind_oat_fits, eval=FALSE}
-# #tibbles of annual predictions for AR1 & STIPM with a given lag
-# bind_rows(
-#   list.files("oat_fits", pattern = "lags_spwn0_hvst0", full.names = T) |>
-#     map_df(~readRDS(.x)) |> mutate(lag_mod = paste0("l1_", mod))
-#   ,
-#   list.files("oat_fits", pattern = "lags_spwn1_hvst1", full.names = T) |>
-#     map_df(~readRDS(.x)) |> mutate(lag_mod = paste0("l2_", mod))
-#   ,
-#   list.files("oat_fits", pattern = "lags_spwn2_hvst2", full.names = T) |>
-#     map_df(~readRDS(.x)) |> mutate(lag_mod = paste0("l3_", mod))
-# ) |>
-#   select(lag_mod, year, StockID, pop_id, pop, n_diverg, n_eff, Rhat, `2.5%`:`97.5%`) |>
-#   saveRDS("oat_fits/oat_l0_l1_l2_2009_2019.rds")
-
+#bind up per-year output from the one-ahead runs into a single table
+list.files(pattern = "oat_fits", full.names = T) |>
+  map_df(~readRDS(.x)) |> 
+  select(mod, year, StockID, pop_id, pop, n_diverg, n_eff, Rhat, `2.5%`:`97.5%`) |>
+  saveRDS("oat_out_all_years.rds")
 ```
 
-For comparison, generate deterministic trailing means and read official preseason forecast compilation.
-
-```{r trailing_means_and_fcst, eval=FALSE}
-#create a temp col of the best case values that would be available in a given forecast year (i.e., up to year - 1)
+```{r trailing_means, eval=FALSE}
+#create a temp col of the postseason FRAM values available in a given forecast year
 #then create rolling mean over prior values
-#in addition, join the compilation of submitted forecasts from Marlene Bellman
+#no longer joining the MB-compiled submitted forecasts
 rtrn_trail_mean_fcst <- coho_data_tbl |> 
   select(StockID, pop_id, pop, year, rtrn) |>
   group_by(StockID, pop_id, pop) |> 
   mutate(
-    lag3_rtrn = c(NA, NA, NA, head(rtrn, -3)),
-    l3_trail_mean = slider::slide_dbl(lag3_rtrn, ~mean(., na.rm=T), .before = 2),
     lag2_rtrn = c(NA, NA, head(rtrn, -2)),
-    l2_trail_mean = slider::slide_dbl(lag2_rtrn, ~mean(., na.rm=T), .before = 2),
-    lag1_rtrn = c(NA, head(rtrn, -1)),
-    l1_trail_mean = slider::slide_dbl(lag1_rtrn, ~mean(., na.rm=T), .before = 2)
+    l2_trail_mean = slider::slide_dbl(lag2_rtrn, ~mean(., na.rm=T), .before = 2)
   ) |> 
   ungroup() |> 
-  left_join(
-    #forecast of record compilation; not public
-    read_csv("O:/code/coho/forecast_wb/ForecastCompilation_SourceDataPre_MB080520.csv") |> 
-      select(StockID, year = YEAR, pre_fcst = RunSize)
-    , by = c("year", "StockID")
-  ) |> 
-  filter(between(year, 2009, 2019)) |> select(-starts_with("lag")) |>  
-  pivot_longer(cols = c(contains("trail"), pre_fcst), names_to = "lag_mod", values_to = "50%") 
+  filter(year >= 2009) |> #or other min-data-year in oat_out
+  select(-starts_with("lag")) |>  
+  pivot_longer(cols = contains("trail_mean"), names_to = "mod", values_to = "50%") 
 
 ```
 
 These are bound together and performance measures are calculated.
 
 ```{r read_oat_and_oat_obs, eval=FALSE}
-oat <- readRDS("oat_fits/oat_l0_l1_l2_2009_2019.rds")
+oat <- readRDS("oat_out_all_years.rds")
 
 (
 oat_obs <- left_join(
   bind_rows(
-    oat |> select(lag_mod, year, StockID, pop_id, pop, `2.5%`:`97.5%`),
+    oat |> select(mod, year, StockID, pop_id, pop, `2.5%`:`97.5%`),
     rtrn_trail_mean_fcst |> select(-rtrn) #will add back in next join
     ),
   coho_data_tbl |> 
@@ -685,12 +667,9 @@ oat_obs <- left_join(
     lar = log(`50%`/rtrn), #log accuracy ratio, used for median symmetric accuracy as described in Morley et al 2018
     ase = abs(err) / scale_err #absolute scaled error for MASE
   ) |> 
-  arrange(year, StockID, lag_mod)
+  arrange(year, StockID, mod)
 )
 
-
-#oat |> count(lag_mod) ; oat_obs |> count(lag_mod) 
-#oat_obs |> select(lag_mod, err:ase) |> summary()
 ```
 
 ## Diagnostics
@@ -698,7 +677,7 @@ oat_obs <- left_join(
 ```{r oat_rhat_neff_n_diverg, eval=FALSE}
 # #all years, all pops
 # oat |> 
-#   group_by(lag_mod) |> 
+#   group_by(mod) |> 
 #   summarise(
 #     n_diverg = max(n_diverg),
 #     Rhat_med = median(Rhat), Rhat_max = max(Rhat),
@@ -707,14 +686,14 @@ oat_obs <- left_join(
 
 # #by year, all pops
 # oat |> 
-#   group_by(lag_mod, year) |> 
+#   group_by(mod, year) |> 
 #   summarise(
 #     n_diverg = max(n_diverg),
 #     Rhat_med = median(Rhat), Rhat_max = max(Rhat),
 #     n_eff_med = median(n_eff), n_eff_min = min(n_eff),
 #     .groups = "drop") |> 
 #   #  print(n = 100)
-#   gt::gt(rowname_col = "lag_mod") |>
+#   gt::gt(rowname_col = "mod") |>
 #   gt::tab_header(title = "One-ahead Rhat and effective draws", subtitle = "Willapa Bay Natural") |>
 #   gt::fmt_number(contains("Rhat"), decimals = 2) |>
 #   gt::fmt_number(contains("n_eff"), decimals = 0)
@@ -722,16 +701,16 @@ oat_obs <- left_join(
 #Willapa, all years, similar to "all pops"
 oat |> 
   filter(StockID == 161) |> 
-  # arrange(lag_mod, year) |>
-  # #filter(str_detect(lag_mod, "stipm")) |> 
+  # arrange(mod, year) |>
+  # #filter(str_detect(mod, "stipm")) |> 
   # print(n = 100)
-  group_by(lag_mod) |> 
+  group_by(mod) |> 
   summarise(
     n_diverg = max(n_diverg),
     Rhat_med = median(Rhat), Rhat_max = max(Rhat),
     n_eff_med = median(n_eff), n_eff_min = min(n_eff),
     .groups = "drop") |> 
-  gt::gt(rowname_col = "lag_mod") |> 
+  gt::gt(rowname_col = "mod") |> 
 #  gt::cols_hide(c("pop_id", "pop")) |> 
   gt::tab_header(title = "One-ahead Rhat and effective draws", subtitle = "2009-19, Willapa Bay Natural") |> 
   gt::fmt_number(contains("Rhat"), decimals = 2) |> 
@@ -739,12 +718,12 @@ oat |>
 
 # #n_eff boxes
 # oat |> 
-#   filter(StockID == 161, str_detect(lag_mod, "stipm")) |> 
-#   ggplot(aes(lag_mod, n_eff)) + geom_boxplot() + geom_jitter(width = 0.1)
+#   filter(StockID == 161, str_detect(mod, "stipm")) |> 
+#   ggplot(aes(mod, n_eff)) + geom_boxplot() + geom_jitter(width = 0.1)
 # #n_eff col timeseries, arguably slightly better after 2012
 # oat |> 
-#   filter(StockID == 161, str_detect(lag_mod, "stipm")) |> 
-#   ggplot(aes(factor(year), n_eff, fill = lag_mod)) + geom_col(position = "dodge") + scale_fill_grey()
+#   filter(StockID == 161, str_detect(mod, "stipm")) |> 
+#   ggplot(aes(factor(year), n_eff, fill = mod)) + geom_col(position = "dodge") + scale_fill_grey()
 
 ```
 
@@ -975,30 +954,34 @@ This chunk performs the actual fits, with the final set of commented lines left 
     lag_smolt = 0, lag_MS = 0, lag_spwn = 0, lag_hvst = 0)
 )
 
-fit_ar1 <- stan_ar1(stan_data = stan_data_list)
-fit_stipm <- stan_stipm(stan_data = stan_data_list)
-
-# # #can construct estimates beyond desired forecast year by "tricking" the wrapper that sets n_year
-# # #then retain fit objects and extract prediction as adult_est (for AR1) and adult_est+harvest_est (for STIPM)
-# # stan_data_list$y_min_max <- 1998:2030
-
-
 # print(stan_data_list$y_min_max)
 # print(c("smolt", range(stan_data_list$smolt$year)))
 # print(c("MS", range(stan_data_list$MS$year)))
 # print(c("spwn", range(stan_data_list$spwn$year)))
 # print(c("hvst", range(stan_data_list$hvst$year)))
 # print(c("rtrn", range(stan_data_list$rtrn$year)))
-# 
+
+# #with minimal defaults to test that sampling is working
+# fit_ar1 <- stan_ar1(stan_data = stan_data_list)
+# fit_stipm <- stan_stipm(stan_data = stan_data_list)
+
+# #as 'minimal but okay' for local machine runs
 # fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 500, n_chain = 4)
 # fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 500, n_chain = 4)
 
-# # #on AWS
-# fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 1000, n_chain = 4)
-# saveRDS(fit_stipm, "fit_stipm_2020.rds")
-# 
-# fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 1000, n_chain = 4)
-# saveRDS(fit_ar1, "fit_ar1_2020.rds")
+# #as 'objects are getting pretty big' runs on AWS
+# fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 2000, n_chain = 4)
+# saveRDS(fit_stipm, "fit_stipm_2023.rds")
+
+# fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 2000, n_chain = 4)
+# saveRDS(fit_ar1, "fit_ar1_2023.rds")
+
+
+##can construct estimates beyond desired forecast year
+##by "tricking" the wrapper that sets n_year
+##then retain fit objects and extract prediction
+##as adult_est (for AR1) and adult_est+harvest_est (for STIPM)
+# stan_data_list$y_min_max <- 1998:2030
 
 ```
 
@@ -1010,12 +993,8 @@ This chunk extracts adult estimates and is somewhat superseded by `pdrw` object 
 # #these are huge, balloons memory
 # #per year have rows = 4chains * post-warmup
 # 
-# # Oct2021: 
-# "O:/code/coho/forecast_wb/ssc_oct_2021/full_data_fit_ar1.rds"
-# "O:/code/coho/forecast_wb/ssc_oct_2021/full_data_fit_stipm.rds"
-
-# fit_ar1 <- readRDS("O:/code/coho/forecast_wb/full_data_fit_ar1_2020.rds")
-# fit_stipm <- readRDS("O:/code/coho/forecast_wb/full_data_fit_stipm_2020.rds")
+# fit_ar1 <- readRDS("~/O/code/coho/forecast_wb/fit_ar1_2023.rds")
+# fit_stipm <- readRDS("~O/code/coho/forecast_wb/fit_stipm_2023.rds")
 
 fit_ar1_wb <- spread_draws(fit_ar1, adult_est[n_year,n_pop] | n_pop) |>
   ungroup() |> select(n_year, .iteration, rtrn = `34`) |>
@@ -1116,7 +1095,7 @@ pdrw <- bind_rows(
   left_join(distinct(coho_data_tbl, pop_id, StockID, StockLongName), by = "pop_id")
 
 # #from AWS
-# saveRDS(pdrw, "pdrw_2020.rds")
+# saveRDS(pdrw, "pdrw_2023.rds")
 ```
 
 ## Return plots
