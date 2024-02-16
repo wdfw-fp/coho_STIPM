@@ -4,9 +4,9 @@ author: ""
 date: "`r Sys.Date()`"
 params:
   f_pop_stock_metadata: "data/pop_stock_metadata.csv"
-  f_prior_year_dataset: "data/fram_cwt_smolt_fulljoin_for2022.csv"
-  f_fram_mdb: "~/O/code/coho/fram_mdbs/PSC_CoTC_PostSeason_CohoFRAMDB_thru2021_021523.mdb"
-  f_fram_prelim_escp: "~/T/DFW-Salmon Mgmt Modeling Team - General/Escapement files/Coho/fram_coho_escapement_2023.xlsx"
+  f_prior_year_dataset: "data/fram_cwt_smolt_fulljoin_for2023.csv"
+  f_fram_mdb: "C:/data/BKtest7Transfer.Mdb"
+  f_fram_prelim_escp: "~/T/DFW-Salmon Mgmt Modeling Team - General/Escapement files/Coho/fram_coho_escapement_2023.xlsx" 
   f_smolt_migrants: "data/Smolt Time Series.xlsx"
   f_cwt_rel_rec_lookup: "data/rmis_survival_hatchery_release_location.csv"
   f_cwt_releases: "data/rmis_releases_all_coho_by2010_onward.csv"
@@ -86,18 +86,8 @@ During a new cycle of annual forecast production, the `dplyr::rows_upsert` funct
 
 fram_mdb_reader <- function(
     mdb_file_path = params$f_fram_mdb,
-    fram_table,
-    osx = grepl("apple", sessionInfo()$platform)
+    fram_table
     ) {
-  if(osx){
-    t_out <- readr::read_csv(I(
-      system2(
-        "mdb-export",
-        args = paste(str_replace_all(mdb_file_path, " ", "\\\\ "),
-                     fram_table),
-        stdout = T) 
-    ))
-  } else {
     db_con <- DBI::dbConnect(
       drv = odbc::odbc(),
       .connection_string = paste0(
@@ -107,12 +97,12 @@ fram_mdb_reader <- function(
     t_out <- DBI::dbReadTable(db_con, fram_table)
 
     DBI::dbDisconnect(db_con)
-  }
   return(t_out)
 }
 
 fram_stocks <- c(105,93,89,45,51,55,75,81,61,23,149,63,107,115,111,157,97,135,153,101,69,1,85,139,131,127,145,11,17,59,35,29,117,161)
-fram_runs <- 22:45 #1998 forward, or 34 start for 2010 onward
+#fram_runs <- 22:45 #1998 forward, or 34 start for 2010 onward
+fram_runs <- 402 # using only transfer database for 2022 only, did not reconstruct prior years for 2024 forecast
 fram <- list()
 
 #Note the original negative escapement in A12A Wild in 2005 is due to an error in the FRAM database
@@ -127,7 +117,7 @@ fram$runid <- fram_mdb_reader(fram_table = "RunID") |>
 fram$escp <- fram_mdb_reader(fram_table = "Escapement") |> 
   filter(StockID %in% fram_stocks, RunID %in% fram_runs) |> 
   select(RunID, StockID, spwn = Escapement) |> 
-  mutate(spwn = if_else(spwn < 0, 0.01, spwn))
+  mutate(spwn = if_else(spwn < 0, 0.01, spwn)) # remove negative escapement values
 fram$mort <- fram_mdb_reader(fram_table = "Mortality") |> 
   filter(StockID %in% fram_stocks, RunID %in% fram_runs) |> 
   mutate(
@@ -137,11 +127,10 @@ fram$mort <- fram_mdb_reader(fram_table = "Mortality") |>
   summarise(hvst = sum(mort), .groups = "drop")
 
 #unpiped for clarity
-fram$spwn_hvst_rtrn <- full_join(fram$escp, fram$mort, by = c("RunID", "StockID")) |> 
-  bind_rows(tibble(RunID = c(24, 25), StockID = c(157, 157)))
+fram$spwn_hvst_rtrn <- full_join(fram$escp, fram$mort, by = c("RunID", "StockID")) # %>% bind_rows(tibble(RunID = c(24, 25), StockID = c(157, 157))) # run bind_rows if using full post-season framdb 
 fram$spwn_hvst_rtrn <- full_join(fram$runid, fram$spwn_hvst_rtrn, by = "RunID") |> select(-RunID)
 fram$spwn_hvst_rtrn <- full_join(pop_stock_metadata, fram$spwn_hvst_rtrn, by = "StockID")
-# this data gets upserted
+# this sets up data that gets upserted
 fram$spwn_hvst_rtrn <- fram$spwn_hvst_rtrn |> mutate(rtrn = spwn + hvst)
 
 ```
@@ -233,11 +222,14 @@ rmis$est_n_rel_rec <- rmis$est_n_rel_rec |>
 ```
 
 
-```{r smolt_format, eval = FALSE}
+```{r smolt_update, eval = FALSE}
 
-# Load updated 2024 smolt data from Marisa
-smolt_time_Series_2024 <- readr::read_csv("../2024/RAW_DATA/Smolt Time Series DAta.csv")
+# Load updated smolt data
+# Used stipm_2023 data with manually updated 2024 values from "2024 Wild Coho Forecasts - WDFW Science Division.pdf".
+# 2024 data file provided by Marisa was missing coastal populations and values for puget sound populations differed from
+# previous year. Need to consider this more.
 
+readxl::read_xlsx(params$f_smolt_migrants, sheet = "stipm_2024", na ="NA") 
 
 ```
 
@@ -253,11 +245,11 @@ coho_data_tbl_prior <- read_csv(params$f_prior_year_dataset)
 coho_data_tbl <- coho_data_tbl_prior |> 
   filter(year >= 1998) |> 
   rows_upsert(
-    fram$spwn_hvst_rtrn, #generated above from FRAM mdb
+    fram$spwn_hvst_rtrn %>% mutate(year = as.numeric(year)),  #generated above from FRAM mdb
     by = c("pop_id", "pop", "StockID", "StockLongName", 
            "lon","lat","hab_km","smolt_ocn_surv_pop","hat",
            "year")
-  ) |> 
+  ) |>  
   rows_upsert(
     rmis$est_n_rel_rec,
     by = c("smolt_ocn_surv_pop", "year")
@@ -267,15 +259,51 @@ coho_data_tbl <- coho_data_tbl_prior |>
     #Snohomish new from 2002-onward, otherwise handful of new 2022 vals
     right_join(
       pop_stock_metadata,
-      readxl::read_excel(params$f_smolt_migrants, sheet = "stipm_2023") |> 
+      readxl::read_excel(params$f_smolt_migrants, sheet = "stipm_2024") |> 
         filter(year >= 1998) |> 
-        select(year, StockID, smolt),
+        select(year, StockID, smolt) %>% 
+        # year is RETURN year in fram data and RMIS rec (now that we corrected this in 2024), but Ocean Entry Year in the smolt table
+        # to turn OEY into return year add 1
+         mutate(year=year+1), 
       by = c("StockID"))
     ,
     by = c("pop_id", "pop", "StockID", "StockLongName", 
            "lon","lat","hab_km","smolt_ocn_surv_pop","hat",
            "year")
   )
+
+## Update with most recent estimate
+
+# WB 2023 prelims: from Barb run reconstruction file "2024 WB4 Coho Run Reconstruction Model Draft 02.15.2024.xlsx" Spawning and Natural Escapement tabs
+  # NOR = 15939 (NOS + NOB including rack)
+
+coho_data_tbl <- rows_upsert(
+  coho_data_tbl
+  ,
+  right_join(
+    pop_stock_metadata,
+    tibble(
+      StockID = 161, year = 2023, spwn = 15939, # updated for 2024 forecast
+      # make harvest linear model using most recent year data
+      hvst = lm(
+        log(hvst) ~ log(spwn), 
+        data = filter(coho_data_tbl, StockID==161, between(year, 2016, 2022))
+      ) |> 
+        predict(tibble(spwn = spwn)) |> exp(),
+      rtrn = spwn + hvst
+    ),
+    by = "StockID"
+  )
+  ,
+  by = c("pop_id", "pop", "StockID", "StockLongName", 
+         "lon","lat","hab_km","smolt_ocn_surv_pop","hat",
+         "year")
+)
+
+coho_data_tbl |> filter(year==2022) |> print(n=50)
+
+write_csv(coho_data_tbl, "data/fram_cwt_smolt_fulljoin_for2024.csv")
+
 
 ```
 
@@ -286,6 +314,8 @@ Compiled escapement estimates and simple regression-based estimates of stock spe
 Further preliminary escapement estimates for the most recent year can also be added if available, with harvest following the same approach as for a not-yet-available FRAM post-season run.
 
 ```{r coho_data_tbl_prelim, eval=FALSE}
+
+# Did not run preliminary estimate for 2024 forecast
 coho_data_tbl_prelim <- coho_data_tbl |> 
   rows_upsert(
     left_join(
@@ -324,6 +354,7 @@ coho_data_tbl_prelim <- rows_upsert(
       by = c("StockID")
     ) |>
     nest(newdata = spwn) |>
+    # fit simple linear model to predict FRAM harvest for prelim estimate
     mutate(
       r2 = map_dbl(lm, ~summary(.x) |> pluck("r.squared")),
       hvst = map2_dbl(lm, newdata, ~predict.lm(.x, newdata = .y) |> exp()),
@@ -344,43 +375,6 @@ coho_data_tbl_prelim <- rows_upsert(
 coho_data_tbl_prelim |> filter(is.na(pop_id))
 coho_data_tbl_prelim |> filter(is.na(rtrn)) |> print(n=50)
 coho_data_tbl_prelim |> filter(year==2021) |> print(n=50)
-```
-
-```{r coho_data_tbl_add_WB_most_recent_write_csv, eval=FALSE}
-# WB 2022 prelims:
-#  nat UM: 29263 NOS + 423 NOB = spwn = 29686
-#  (hat M: 10484 HOS + 59019 HOB)
-
-# coho_data_tbl_prelim <- rows_upsert(
-#   coho_data_tbl_prelim
-coho_data_tbl <- rows_upsert(
-  coho_data_tbl
-  ,
-  right_join(
-    pop_stock_metadata,
-    tibble(
-      StockID = 161, year = 2022, spwn = 29686,
-      hvst = lm(
-        log(hvst) ~ log(spwn), 
-        data = filter(coho_data_tbl_prelim, StockID==161, between(year, 2016, 2020))
-      ) |> 
-        predict(tibble(spwn = spwn)) |> exp(),
-      rtrn = spwn + hvst
-    ),
-    by = "StockID"
-  )
-  ,
-  by = c("pop_id", "pop", "StockID", "StockLongName", 
-         "lon","lat","hab_km","smolt_ocn_surv_pop","hat",
-         "year")
-)
-
-coho_data_tbl_prelim |> filter(year==2022) |> print(n=50)
-coho_data_tbl |> filter(year==2022) |> print(n=50)
-
-#write_csv(coho_data_tbl_prelim, "data/fram_cwt_smolt_fulljoin_for2023_prelim.csv")
-write_csv(coho_data_tbl, "data/fram_cwt_smolt_fulljoin_for2023.csv")
-
 ```
 
 
