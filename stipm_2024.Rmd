@@ -52,7 +52,7 @@ pal_lag_mod <- c("purple", "gold", "cyan", "pink")
 # see below for update integration:
 # - first as 'prelim' with smolts, CWTs, escp and lm(log(hvst) ~ log(spwn)) # not run for 2024
 # - then redone after CoTC postseason mdb available
-coho_data_tbl <- read_csv("data/fram_cwt_smolt_fulljoin_for2023.csv")
+coho_data_tbl <- read_csv("data/fram_cwt_smolt_fulljoin_for2024.csv")
 
 # Posterior draws
 # pdrw <- readRDS("O:/code/coho/forecast_wb/pdrw_2020.rds")
@@ -521,7 +521,7 @@ stan_stipm <- function(stan_data, n_iter = 200, n_chain = 2){
 }
 ```
 
-# One-ahead *post-hoc* forecast performance evaluation
+# One-ahead *post-hoc* forecast performance evaluation - Did not run in 2024
 
 This section not rerun for 2023, but revised to a single set of data lags reflecting as-applied experience. The one-at-a-time model fitting proceeds by iterating through a vector of "max data years", predicting the following year by first filtering down a subset of the estimation data, then calling the stan models, and then extracting diagnostic and posterior results. Deterministic trailing means of the OA3 return are also generated for comparison.
 
@@ -667,7 +667,7 @@ oat_obs <- left_join(
 
 ```
 
-## Diagnostics
+## Diagnostics - Not run for 2024 forecast
 
 ```{r oat_rhat_neff_n_diverg, eval=FALSE}
 # #all years, all pops
@@ -722,7 +722,7 @@ oat |>
 
 ```
 
-## One-ahead Performance
+## One-ahead Performance - Not run for 2024 forecast
 
 ### Lag3 paneled by year
 
@@ -945,7 +945,7 @@ This chunk performs the actual fits, with the final set of commented lines left 
 (
   stan_data_list <- stan_data_filter(
     coho_data_tbl,
-    data_year_min = 1998, data_year_max = 2022, 
+    data_year_min = 1998, data_year_max = 2024, # if set to 2010 would increase speed
     lag_smolt = 0, lag_MS = 0, lag_spwn = 0, lag_hvst = 0)
 )
 
@@ -964,12 +964,12 @@ This chunk performs the actual fits, with the final set of commented lines left 
 # fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 500, n_chain = 4)
 # fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 500, n_chain = 4)
 
-# #as 'objects are getting pretty big' runs on AWS
-# fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 2000, n_chain = 4)
-# saveRDS(fit_stipm, "fit_stipm_2023.rds")
+# #as 'objects are getting pretty big' runs on AWS - the two fits below were performed for the 2024 forecast
+ #fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 2000, n_chain = 4)
+ #saveRDS(fit_stipm, "fit_stipm_2024.rds")
 
-# fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 2000, n_chain = 4)
-# saveRDS(fit_ar1, "fit_ar1_2023.rds")
+ #fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 2000, n_chain = 4)
+ #saveRDS(fit_ar1, "fit_ar1_2024.rds")
 
 
 ##can construct estimates beyond desired forecast year
@@ -982,14 +982,17 @@ This chunk performs the actual fits, with the final set of commented lines left 
 
 ## Output objects
 
-This chunk extracts adult estimates and is somewhat superseded by `pdrw` object below, but left in case. The first block extracts draws in a `tidybayes` flow while the second uses the `rstan` basic `summary()$summary` mode.
+This chunk extracts adult estimates and is somewhat superseded by `pdrw` object below, but left in case. The first block extracts draws in a `tidybayes` flow while the second uses the `rstan` basic `summary()$summary` mode. This chunk was not run for 2024.
 
 ```{r read_full_data_fits, eval=FALSE}
+
+# Did not run this chunk for the 2024 forecast and decided to only run the `pdrw` object below.
+
 # #these are huge, balloons memory
 # #per year have rows = 4chains * post-warmup
-# 
-# fit_ar1 <- readRDS("~/O/code/coho/forecast_wb/fit_ar1_2023.rds")
-# fit_stipm <- readRDS("~/O/code/coho/forecast_wb/fit_stipm_2023.rds")
+# Load saved objects
+# fit_ar1 <- readRDS("~/O/code/coho/forecast_wb/fit_ar1_2023.rds") # incorrect path
+# fit_stipm <- readRDS("~/O/code/coho/forecast_wb/fit_stipm_2023.rds") # incorrect path
 
 
 # fit_ar1_wb <- spread_draws(fit_ar1, adult_est[n_year,n_pop] | n_pop) |>
@@ -1066,6 +1069,10 @@ fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
 This chunk extracts the posterior distributions of per-year, per-stock return estimates for both the AR1 and STIPM model fits.
 
 ```{r pdrw, eval=FALSE}
+# Load saved objects
+fit_ar1 <- readRDS("fit_ar1_2024.rds")
+fit_stipm <- readRDS("fit_stipm_2024.rds")
+
 pdrw <- bind_rows(
   #stipm
   #pre-fcst year estimate series
@@ -1077,7 +1084,7 @@ pdrw <- bind_rows(
     by = c("n_year", ".chain", ".iteration", ".draw", "pop_id")
   ) |>
     mutate(
-      year = first(stan_data_list$y_min_max)-1+n_year, n_year = NULL,
+      year = first(stan_data_list$y_min_max)-1+n_year, n_year = NULL, 
       rtrn = spwn+hvst,
       mod = "stipm") |> 
     #add fcst year
@@ -1098,24 +1105,30 @@ pdrw <- bind_rows(
   left_join(distinct(coho_data_tbl, pop_id, StockID, StockLongName), by = "pop_id")
 
 # #from AWS
-# saveRDS(pdrw, "pdrw_2023.rds")
+# saveRDS(pdrw, "pdrw_2024.rds")
 ```
 
 ## Return plots
 
 ```{r posterior_density}
+# Plot the distribution of return estimates predicted by the ar1 and stipm models
+# edited year to be 2024
+
+png('figures/WB_estimate_return_AR1_STIPM_2024.png')
 pdrw |> 
-  filter(StockID == 161, year == 2023) |> 
+  filter(StockID == 161, year == 2024) |> 
   ggplot(aes(x = rtrn, color = mod, fill = mod)) + 
   stat_slab(alpha = 0.5) +
+  # plot the median estimated return for each model
   geom_vline(
-    data = filter(pdrw, StockID==161, year == 2023) |> group_by(mod) |> 
+    data = filter(pdrw, StockID==161, year == 2024) |> group_by(mod) |> 
       summarise(across(rtrn, median), .groups = "drop"),
     aes(xintercept = rtrn, color = mod), linewidth = 1.2,
     show.legend = F
   ) +
+  # label median estimated return for each model
   geom_text(
-    data = filter(pdrw, StockID==161, year == 2023) |> group_by(mod) |> 
+    data = filter(pdrw, StockID==161, year == 2024) |> group_by(mod) |> 
       summarise(across(rtrn, median), .groups = "drop"),
     aes(x = rtrn, y = 1, label = scales::comma(round(rtrn)), color = mod),
     nudge_x = c(-12000, 12000),
@@ -1123,20 +1136,21 @@ pdrw |>
     show.legend = F
   ) +
   scale_y_continuous("") +
-  scale_x_continuous("Estimated return", labels = scales::comma) +
+  scale_x_continuous("Estimated 2024 WB NOR coho Return", labels = scales::comma) +
   scale_fill_discrete(type = pal_lag_mod[1:2], aesthetics = c("color", "fill")) +
   theme(legend.position = "top", legend.title = element_blank())
+dev.off()
 ```
 
 This chunk defines a convenience plotting function taking a *StockID* argument and returning time series plots paneled by model of the posterior distribution of estimated total return.
 
 ```{r ggfcst_ts}
-ggfcst_ts <- function(stk = 161, year_pred = 2023) {
+ggfcst_ts <- function(stk = 161, year_pred = 2024) { # updated the year predicted to 2024
   pdrw_stk <- filter(pdrw, StockID == stk, year >= 1998)
   
   # #could add logic for function arg ar1only = T 
   # pdrw_stk <- filter(pdrw_stk, mod == "ar1") 
-  
+
   ggplot(pdrw_stk, aes(year, rtrn)) +
     stat_lineribbon(aes(fill = mod), alpha = 0.4, show.legend = F) +
     geom_point(data = filter(stan_data_list$rtrn, StockID==stk), color = 1) +
@@ -1158,10 +1172,13 @@ ggfcst_ts <- function(stk = 161, year_pred = 2023) {
     theme_light(base_size = 13)
 }
 
+png("figures/WB_2024_forecast_return_fits.png")
 ggfcst_ts()
+dev.off()
 ```
 
 ```{r other_stocks, eval=FALSE}
+# This code does not apply to the WB NOR coho forecast
 ggfcst_ts_coast <- map(
   coho_data_tbl |> distinct(StockID, StockLongName) |> filter(StockID > 120) |> pluck("StockID") |> set_names(), 
  ~ggfcst_ts(.x))
@@ -1180,6 +1197,7 @@ patchwork::wrap_plots(ggfcst_ts_jdf)
 ggfcst_ts_stsno <- map(c(29, 35) |> set_names(), ~ggfcst_ts(.x))
 patchwork::wrap_plots(ggfcst_ts_stsno, ncol = 1)
 
+# did not run these predictions for 2024
 bind_rows(fit_ar1_pred, fit_stipm_pred) |> 
   filter(StockID %in% c(29)) |> 
   select(year, mod, StockID, StockLongName, pop_id, `2.5%`,`25%`,`50%`,`75%`,`97.5%`) |> 
@@ -1190,15 +1208,24 @@ bind_rows(fit_ar1_pred, fit_stipm_pred) |>
 ## Weighting
 
 ```{r simple_msa_weighted_median, eval=TRUE, results='show'}
-#stack weighting for 2023...
+#stack weighting for 2024...
 #using weighting eqn in slide 31, with Oct 2021 lag-1 MSA
+# OA3 = ocean age 3, JA3 = January age 3 
+
+# Notes from Dan A on the hard coded values below:
+  # The 1.2315 is a FRAM-related convention that has nothing to do with this/Willapa. The AR1 vs STIPM   
+  # weights are based on past performance skill. I can't recall for certain off top of my head if they   
+  # were directly from the OAT or from something Thomas did based off the OAT; I think maybe the latter.
+
+# For 2024 these weights are now based on a different formulation of the input data for the STIPM, tested the effect of changing them to be 0.5
 
 pdrw |>
-  filter(StockID==161, year == 2023) |>
+  filter(StockID==161, year == 2024) |>
   group_by(mod) |>
   summarise(across(rtrn, median), .groups = "drop") |>
   mutate(
-    w = 1/c(ar1 = 0.96, stipm = 0.65) / sum(1/c(ar1 = 0.96, stipm = 0.65)),
+   # w = 1/c(ar1 = 0.96, stipm = 0.65) / sum(1/c(ar1 = 0.96, stipm = 0.65)), 
+     w = 1/c(ar1 = 0.5, stipm = 0.5) / sum(1/c(ar1 = 0.5, stipm = 0.5)), 
     rtrn_w = rtrn * w
   ) |> 
   summarise(oa3 = sum(rtrn_w), ja3 = oa3 * 1.2315) |> 
