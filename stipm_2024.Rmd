@@ -1048,7 +1048,7 @@ fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
   ) |>
   left_join(distinct(coho_data_tbl, pop_id, StockID, StockLongName), by = "pop_id")
 
-
+# Remember here that the year max is one ahead of given year, so for 2024 is puts out 2025 data
 (g <- bind_rows(fit_ar1_pred, fit_stipm_pred) |> 
   filter(StockID >= 130) |> 
   arrange(StockID) |> 
@@ -1057,7 +1057,7 @@ fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
          n_eff, Rhat, n_diverg) |> 
   unite("stk", StockID, StockLongName, pop_id) |> 
   gt(groupname_col = "stk") |> 
-  tab_header(title = "2023 forecast return estimates", 
+  tab_header(title = "2025 forecast return estimates", 
              subtitle = "Posterior quantiles and stan diagnostics") |> 
   fmt_integer(columns = c("n_eff", `2.5%`,`25%`,`50%`,`75%`,`97.5%`)) |> 
   fmt_number(columns = "Rhat", decimals = 3) |> 
