@@ -1141,6 +1141,16 @@ pdrw |>
   scale_fill_discrete(type = pal_lag_mod[1:2], aesthetics = c("color", "fill")) +
   theme(legend.position = "top", legend.title = element_blank())
 dev.off()
+
+# Calculate January Age 3
+ pdrw |>
+   filter(StockID==161, year == 2024) |>
+   group_by(mod) |>
+   summarise(across(rtrn, median), .groups = "drop") %>%
+   mutate(ja3 = rtrn*1.2315)
+
+
+
 ```
 
 This chunk defines a convenience plotting function taking a *StockID* argument and returning time series plots paneled by model of the posterior distribution of estimated total return.
@@ -1231,6 +1241,9 @@ pdrw |>
   summarise(oa3 = sum(rtrn_w), ja3 = oa3 * 1.2315) |> 
   mutate(across(everything(), ~scales::comma(round(.)))) |> 
   gt::gt()
+
+
+
   
 ```
 
@@ -1240,6 +1253,7 @@ pdrw |>
 ```{r eval=FALSE}
 # boot::inv.logit()
 # or: function(x) { exp(x)/(1+exp(x)) }
+# Marine survival estimate produced by the STIPM, not used in 2024. Needs investigation.
 
 # summary(fit_stipm, pars = "mu_mu_surv")$summary |>
 #   as.data.frame() |> rownames_to_column("stan_out") |> tibble()
