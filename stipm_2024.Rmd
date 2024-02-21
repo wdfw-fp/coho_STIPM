@@ -1029,7 +1029,7 @@ fit_ar1_pred <- summary(fit_ar1, pars = "adult_pred")$summary |>
   mutate(
     var = str_extract(stan_out, "[a-z]+[:punct:][a-z]+"),
     pop_id = as.numeric(str_extract(stan_out, "[0-9]+")),
-    year = last(stan_data_list$y_min_max) + 1, #pred year, max data year x+1
+   # year = last(stan_data_list$y_min_max) + 1, #pred year, max data year x+1
     mod = "ar1",
     n_diverg = get_sampler_params(fit_ar1, inc_warmup = FALSE) |>
       map_dbl(~.x[, "divergent__"] |> sum()) |> sum()
@@ -1072,7 +1072,8 @@ fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
 This chunk extracts the posterior distributions of per-year, per-stock return estimates for both the AR1 and STIPM model fits.
 
 ```{r pdrw, eval=FALSE}
-
+# This function is more robust to whatever data year max is, use this chunk
+# in 2023 forecast data year max was 2022, reflecting prior misalignment of smolt outmigrants and associated return year
 pdrw <- bind_rows(
   #stipm
   #pre-fcst year estimate series
@@ -1105,7 +1106,7 @@ pdrw <- bind_rows(
   left_join(distinct(coho_data_tbl, pop_id, StockID, StockLongName), by = "pop_id")
 
 # #from AWS
- saveRDS(pdrw, file.path(object_path,"pdrw_2024.rds"))
+# saveRDS(pdrw, file.path(object_path,"pdrw_2024.rds"))
 ```
 
 ## Return plots
@@ -1146,7 +1147,7 @@ This chunk defines a convenience plotting function taking a *StockID* argument a
 
 ```{r ggfcst_ts}
 ggfcst_ts <- function(stk = 161, year_pred = 2024) { # updated the year predicted to 2024
-  pdrw_stk <- filter(pdrw, StockID == stk, year >= 1998)
+  pdrw_stk <- filter(pdrw, StockID == stk, between(year, 1998, year_pred))
   
   # #could add logic for function arg ar1only = T 
   # pdrw_stk <- filter(pdrw_stk, mod == "ar1") 
