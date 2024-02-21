@@ -59,6 +59,11 @@ coho_data_tbl <- read_csv("data/fram_cwt_smolt_fulljoin_for2024.csv")
 # pdrw <- readRDS("~/O/code/coho/forecast_wb/pdrw_2020.rds")
 # pdrw |> filter(StockID==161, year > 2019) |> group_by(mod, StockID, year) |> summarise(across(c(spwn, hvst, rtrn), ~median(.,na.rm=T)))
 
+# Set path where each year's model output is saved
+object_path <- "../2024/MODEL_OUTPUT"
+# Set path where each year's figures are saved
+figure_path <- "../2024/FIGURES"
+
 ```
 
 # Data
@@ -966,10 +971,10 @@ This chunk performs the actual fits, with the final set of commented lines left 
 
 # #as 'objects are getting pretty big' runs on AWS - the two fits below were performed for the 2024 forecast
  #fit_stipm <- stan_stipm(stan_data = stan_data_list, n_iter = 2000, n_chain = 4)
- #saveRDS(fit_stipm, "fit_stipm_2024.rds")
+ #saveRDS(fit_stipm, file.path(object_path,"fit_stipm_2024.rds"))
 
  #fit_ar1 <- stan_ar1(stan_data = stan_data_list, n_iter = 2000, n_chain = 4)
- #saveRDS(fit_ar1, "fit_ar1_2024.rds")
+ #saveRDS(fit_ar1, file.path(object_path,"fit_ar1_2024.rds"))
 
 
 ##can construct estimates beyond desired forecast year
@@ -986,13 +991,11 @@ This chunk extracts adult estimates and is somewhat superseded by `pdrw` object 
 
 ```{r read_full_data_fits, eval=FALSE}
 
-# Did not run this chunk for the 2024 forecast and decided to only run the `pdrw` object below.
-
 # #these are huge, balloons memory
 # #per year have rows = 4chains * post-warmup
 # Load saved objects
-# fit_ar1 <- readRDS("~/O/code/coho/forecast_wb/fit_ar1_2023.rds") # incorrect path
-# fit_stipm <- readRDS("~/O/code/coho/forecast_wb/fit_stipm_2023.rds") # incorrect path
+fit_ar1 <- readRDS(file.path(object_path,"fit_ar1_2024.rds"))
+fit_stipm <- readRDS(file.path(object_path,"fit_stipm_2024.rds"))
 
 
 # fit_ar1_wb <- spread_draws(fit_ar1, adult_est[n_year,n_pop] | n_pop) |>
@@ -1069,9 +1072,6 @@ fit_stipm_pred <- summary(fit_stipm, pars = "adult_pred")$summary |>
 This chunk extracts the posterior distributions of per-year, per-stock return estimates for both the AR1 and STIPM model fits.
 
 ```{r pdrw, eval=FALSE}
-# Load saved objects
-fit_ar1 <- readRDS("fit_ar1_2024.rds")
-fit_stipm <- readRDS("fit_stipm_2024.rds")
 
 pdrw <- bind_rows(
   #stipm
@@ -1105,7 +1105,7 @@ pdrw <- bind_rows(
   left_join(distinct(coho_data_tbl, pop_id, StockID, StockLongName), by = "pop_id")
 
 # #from AWS
-# saveRDS(pdrw, "pdrw_2024.rds")
+ saveRDS(pdrw, file.path(object_path,"pdrw_2024.rds"))
 ```
 
 ## Return plots
@@ -1114,7 +1114,7 @@ pdrw <- bind_rows(
 # Plot the distribution of return estimates predicted by the ar1 and stipm models
 # edited year to be 2024
 
-png('figures/WB_estimate_return_AR1_STIPM_2024.png')
+png(file.path(figure_path, "WB_estimate_return_AR1_STIPM_2024.png"))
 pdrw |> 
   filter(StockID == 161, year == 2024) |> 
   ggplot(aes(x = rtrn, color = mod, fill = mod)) + 
@@ -1172,7 +1172,7 @@ ggfcst_ts <- function(stk = 161, year_pred = 2024) { # updated the year predicte
     theme_light(base_size = 13)
 }
 
-png("figures/WB_2024_forecast_return_fits.png")
+png(file.path(figure_path, "WB_2024_forecast_return_fits.png"))
 ggfcst_ts()
 dev.off()
 ```
@@ -1214,8 +1214,7 @@ bind_rows(fit_ar1_pred, fit_stipm_pred) |>
 
 # Notes from Dan A on the hard coded values below:
   # The 1.2315 is a FRAM-related convention that has nothing to do with this/Willapa. The AR1 vs STIPM   
-  # weights are based on past performance skill. I can't recall for certain off top of my head if they   
-  # were directly from the OAT or from something Thomas did based off the OAT; I think maybe the latter.
+  # weights are based on past performance skill.
 
 # For 2024 these weights are now based on a different formulation of the input data for the STIPM, tested the effect of changing them to be 0.5
 
