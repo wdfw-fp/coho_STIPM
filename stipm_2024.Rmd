@@ -3,14 +3,14 @@ title: "2024 Willapa Bay natural coho forecast"
 author: "" 
 date: "`r Sys.Date()`"
 params:
-  f_pop_stock_metadata: "data/pop_stock_metadata.csv"
-  f_prior_year_dataset: "data/fram_cwt_smolt_fulljoin_for2023.csv"
-  f_fram_mdb: "C:/data/BKtest7Transfer.Mdb"
+  f_pop_stock_metadata: "data/2024/pop_stock_metadata.csv"
+  f_prior_year_dataset: "data/2024/fram_cwt_smolt_fulljoin_for2023.csv"
+  f_fram_mdb: "data/2024/BKtest7Transfer.Mdb"
   f_fram_prelim_escp: "~/T/DFW-Salmon Mgmt Modeling Team - General/Escapement files/Coho/fram_coho_escapement_2023.xlsx" 
-  f_smolt_migrants: "data/Smolt Time Series.xlsx"
-  f_cwt_rel_rec_lookup: "data/rmis_survival_hatchery_release_location.csv"
-  f_cwt_releases: "data/rmis_releases_all_coho_by2010_onward.csv"
-  f_cwt_recoveries: "data/rmis_recs_coho_2010_2024.csv"
+  f_smolt_migrants: "data/2024/Smolt Time Series.xlsx"
+  f_cwt_rel_rec_lookup: "data/2024/rmis_survival_hatchery_release_location.csv"
+  f_cwt_releases: "data/2024/rmis_releases_all_coho_by2010_onward.csv"
+  f_cwt_recoveries: "data/2024/rmis_recs_coho_2010_2024.csv"
 editor_options: 
   chunk_output_type: console
 output: 
@@ -52,7 +52,7 @@ pal_lag_mod <- c("purple", "gold", "cyan", "pink")
 # see below for update integration:
 # - first as 'prelim' with smolts, CWTs, escp and lm(log(hvst) ~ log(spwn)) # not run for 2024
 # - then redone after CoTC postseason mdb available
-coho_data_tbl <- read_csv("data/fram_cwt_smolt_fulljoin_for2024.csv")
+coho_data_tbl <- read_csv("data/2024/fram_cwt_smolt_fulljoin_for2024.csv")
 
 # Posterior draws
 # pdrw <- readRDS("O:/code/coho/forecast_wb/pdrw_2020.rds")
@@ -1114,6 +1114,7 @@ pdrw <- bind_rows(
 ```{r posterior_density}
 # Plot the distribution of return estimates predicted by the ar1 and stipm models
 # edited year to be 2024
+pdrw <- readRDS(file.path(object_path,"pdrw_2024.rds"))
 
 png(file.path(figure_path, "WB_estimate_return_AR1_STIPM_2024.png"))
 pdrw |> 
@@ -1141,6 +1142,16 @@ pdrw |>
   scale_fill_discrete(type = pal_lag_mod[1:2], aesthetics = c("color", "fill")) +
   theme(legend.position = "top", legend.title = element_blank())
 dev.off()
+
+# Calculate January Age 3
+ pdrw |>
+   filter(StockID==161, year == 2024) |>
+   group_by(mod) |>
+   summarise(across(rtrn, median), .groups = "drop") %>%
+   mutate(ja3 = rtrn*1.2315) # where did this come from? 
+
+
+
 ```
 
 This chunk defines a convenience plotting function taking a *StockID* argument and returning time series plots paneled by model of the posterior distribution of estimated total return.
@@ -1231,6 +1242,9 @@ pdrw |>
   summarise(oa3 = sum(rtrn_w), ja3 = oa3 * 1.2315) |> 
   mutate(across(everything(), ~scales::comma(round(.)))) |> 
   gt::gt()
+
+
+
   
 ```
 
@@ -1240,6 +1254,7 @@ pdrw |>
 ```{r eval=FALSE}
 # boot::inv.logit()
 # or: function(x) { exp(x)/(1+exp(x)) }
+# Marine survival estimate produced by the STIPM, not used in 2024. Needs investigation.
 
 # summary(fit_stipm, pars = "mu_mu_surv")$summary |>
 #   as.data.frame() |> rownames_to_column("stan_out") |> tibble()
