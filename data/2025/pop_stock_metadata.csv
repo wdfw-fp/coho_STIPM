@@ -1,0 +1,35 @@
+pop_id,pop,StockID,StockLongName,lon,lat,hab_km,smolt_ocn_surv_pop,hat
+1,Area 10 Miscellaneous Wild,105,Area 10 Miscellaneous Wild UnMarked,-122.465661,47.668699,39.9,NA,NA
+2,Area 10E Miscellaneous Wild,93,Area 10E Miscellaneous Wild UnMarked,-122.8242,47.5896,130.8,NA,NA
+3,Area 11 Miscellaneous Wild,89,Area 11 Miscellaneous Wild UnMarked,-122.452492,47.388661,44.8,NA,NA
+4,Area 12-12B Wild,45,Area 12/12B Wild UnMarked,-122.7836076,47.65191593,95.4,Big Beef Crk W,0
+5,Area 12A Wild,51,Area 12A Wild UnMarked,-122.859826,47.825445,76.3,Quilcene H,1
+6,Area 12C-12D Wild,55,Area 12C/12D Wild UnMarked,-123.119288,47.364944,202.7,NA,NA
+7,Area 13 Miscellaneous Wild,75,Area 13 Miscellaneous Wild UnMarked,-123.0158944,47.26243266,64.8,Minter Crk W,0
+8,Area 13A Miscellaneous Wild,81,Area 13A Miscellaneous Wild UnMarked,-122.702698,47.264969,46.7,NA,NA
+9,Area 13B Miscellaneous Wild,61,Area 13B Miscellaneous Wild UnMarked,-122.820636,47.195821,360.9,NA,NA
+10,Baker (Skagit) Wild,23,Baker (Skagit) Wild UnMarked,-122.474162,48.359837,102.1,Baker W,0
+11,Chehalis River Wild,149,Chehalis River Wild UnMarked,-124.1692596,46.91656476,2514.2,Bingham Crk W,0
+12,Deschutes River (WA) Wild,63,Deschutes River (WA) Wild UnMarked,-122.9091057,47.04361442,132.3,Deschutes W,0
+13,Dungeness River Wild,107,Dungeness River Wild UnMarked,-123.129772,48.152718,129.7,Dungeness H,1
+14,East JDF Miscellaneous Wild,115,East JDF Miscellaneous Wild UnMarked,-123.0051816,48.02334812,301.3,NA,NA
+15,Elwha River Wild,111,Elwha River Wild UnMarked,-123.569634,48.148155,13.7,NA,NA
+16,Grays Harbor Miscellaneous Wild,157,Grays Harbor Miscellaneous Wild UnMarked,-124.033166,46.939467,211,NA,NA
+17,Green River Wild,97,Green River Wild UnMarked,-122.2145,47.3519,339.3,Green H,1
+18,Hoh River Wild,135,Hoh River Wild UnMarked,-124.43052,47.749116,263.1,NA,NA
+19,Humptulips River Wild,153,Humptulips River Wild UnMarked,-124.054237,47.040881,268.6,NA,NA
+20,Lake Washington Wild,101,Lake Washington Wild UnMarked,-122.2604294,47.64499279,513.3,NA,NA
+21,Nisqually River Wild,69,Nisqually River Wild UnMarked,-122.7012116,47.08810867,317.6,Kalama Crk H,1
+22,Nooksack River Wild,1,Nooksack River Wild UnMarked,-122.597909,48.77648912,692.5,Nooksack H,1
+23,Puyallup River Wild,85,Puyallup River Wild UnMarked,-122.4268386,47.26849792,580.1,Puyallup H,1
+24,Queets River Fall Natural,139,Queets River Fall Natural UnMarked,-124.3542841,47.53794224,381.2,NA,NA
+25,Quillayute River Fall Natural,131,Quillayute River Fall Natural UnMarked,-124.64317,47.907395,761.6,NA,NA
+26,Quillayute River Summer Natural,127,Quillayute River Summer Natural UnMarked,-124.64317,47.907395,19.3,NA,NA
+27,Quinault River Fall Natural,145,Quinault River Fall Natural UnMarked,-124.297924,47.348189,234.3,Quinault H,1
+28,Samish River Wild,11,Samish River Wild UnMarked,-122.4567827,48.55491819,188.2,NA,NA
+29,Skagit River Wild,17,Skagit River Wild UnMarked,-122.3665,48.38805626,1050.6,Skagit H,1
+30,Skokomish River Wild,59,Skokomish River Wild UnMarked,-123.117657,47.339776,106.1,Skokomish H,1
+31,Snohomish River Wild,35,Snohomish River Wild UnMarked,-122.1989139,48.02006679,1358.8,NA,NA
+32,Stillaguamish River Wild,29,Stillaguamish River Wild UnMarked,-122.3902675,48.24389633,694.2,NA,NA
+33,West JDF Miscellaneous Wild,117,West JDF Miscellaneous Wild UnMarked,-123.7042368,48.15569502,242.2,NA,NA
+34,Willapa Bay Natural,161,Willapa Bay Natural UnMarked,-124.09049,46.723579,2028.2,Willapa H,1
